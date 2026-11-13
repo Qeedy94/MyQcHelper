@@ -11,9 +11,9 @@
       "type": "SINGLE",
       "filters": [],
       "attributes": [],
-      "versionCode": 1,
-      "versionName": "1.7",
-      "outputFile": "Punta_destroyer_v1.7.apk"
+      "versionCode": 3,
+      "versionName": "1.7.2",
+      "outputFile": "Punta_destroyer_v1.7.2.apk"
     }
   ],
   "elementType": "File",
@@ -22,14 +22,14 @@
       "minApi": 28,
       "maxApi": 30,
       "baselineProfiles": [
-        "baselineProfiles/1/Punta_destroyer_v1.7.dm"
+        "baselineProfiles/1/Punta_destroyer_v1.7.2.dm"
       ]
     },
     {
       "minApi": 31,
       "maxApi": 2147483647,
       "baselineProfiles": [
-        "baselineProfiles/0/Punta_destroyer_v1.7.dm"
+        "baselineProfiles/0/Punta_destroyer_v1.7.2.dm"
       ]
     }
   ],

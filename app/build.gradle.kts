@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.myapplication"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.7"
+        versionCode = 3
+        versionName = "1.7.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -30,6 +30,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            applicationIdSuffix = ".debug" // 👈 Добавит .debug к ID
         }
     }
     compileOptions {

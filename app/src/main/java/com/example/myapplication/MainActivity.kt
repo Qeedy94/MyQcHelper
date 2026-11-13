@@ -182,7 +182,6 @@ fun TelegramCheckbox(
                 color = if (checked) Color(0xFF3D8DFF) else Color(0xFFB0B0B0),
                 shape = CircleShape
             )
-            // 👇 ВАЖНО: без safeClickable, чтобы клик пробрасывался на Row
             .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
@@ -1496,12 +1495,17 @@ fun CalendarScreen(
 @Composable
 fun SettingsTab(folderUri: String?, onSelectFolder: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val versionName = remember(context) {
         try {
             val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
             pInfo.versionName ?: "?"
         } catch (e: Exception) { "?" }
     }
+
+    var isCheckingUpdate by remember { mutableStateOf(false) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var updateInfo by remember { mutableStateOf<UpdateManager.UpdateInfo?>(null) }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -1542,6 +1546,37 @@ fun SettingsTab(folderUri: String?, onSelectFolder: () -> Unit) {
             }
         }
 
+        Spacer(Modifier.height(12.dp))
+
+        Button(
+            onClick = {
+                scope.launch {
+                    isCheckingUpdate = true
+                    val current = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
+                    val info = UpdateManager.checkForUpdate(current)
+                    if (info != null) {
+                        updateInfo = info
+                        showUpdateDialog = true
+                    } else {
+                        Toast.makeText(context, "У вас последняя версия", Toast.LENGTH_SHORT).show()
+                    }
+                    isCheckingUpdate = false
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6200EE)),
+            enabled = !isCheckingUpdate
+        ) {
+            if (isCheckingUpdate) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
+            } else {
+                Icon(Icons.Default.Update, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Проверить обновления", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+
         Spacer(Modifier.weight(1f))
         Text("Версия приложения: $versionName", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         Spacer(Modifier.height(4.dp))
@@ -1552,6 +1587,30 @@ fun SettingsTab(folderUri: String?, onSelectFolder: () -> Unit) {
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(16.dp))
+    }
+
+    if (showUpdateDialog && updateInfo != null) {
+        AlertDialog(
+            onDismissRequest = { showUpdateDialog = false },
+            shape = RoundedCornerShape(24.dp),
+            title = { Text("Доступно обновление", style = MaterialTheme.typography.titleLarge) },
+            text = { Text("Новая версия ${updateInfo!!.version}. Скачать и установить?", style = MaterialTheme.typography.bodyMedium) },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        showUpdateDialog = false
+                        Toast.makeText(context, "Скачивание...", Toast.LENGTH_SHORT).show()
+                        val apk = UpdateManager.downloadApk(context, updateInfo!!.downloadUrl)
+                        if (apk != null) {
+                            UpdateManager.installApk(context, apk)
+                        } else {
+                            Toast.makeText(context, "Ошибка скачивания", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }) { Text("Обновить") }
+            },
+            dismissButton = { TextButton(onClick = { showUpdateDialog = false }) { Text("Позже") } }
+        )
     }
 }
 
@@ -2101,20 +2160,20 @@ fun ModelListScreen(
             text = { OutlinedTextField(value = bulkCommentText, onValueChange = { bulkCommentText = it }, label = { Text("Текст") }, minLines = 3, textStyle = MaterialTheme.typography.bodyMedium) },
             confirmButton = {
                 TextButton(onClick = {
-                    scope.launch(Dispatchers.IO) {
-                        selectedArticles.forEach { article ->
-                            val oldNote = sharedPrefs.getString("${article}_note", "") ?: ""
-                            val newNote = if (oldNote.isEmpty()) bulkCommentText else "$oldNote\n$bulkCommentText"
-                            sharedPrefs.edit().putString("${article}_note", newNote).apply()
-                        }
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "Добавлено", Toast.LENGTH_SHORT).show()
-                            showCommentDialog = false
-                            bulkCommentText = ""
-                            isSelectionMode = false
-                            selectedArticles = emptySet()
-                        }
+                    // 👇 Исправление: один редактор и commit()
+                    val editor = sharedPrefs.edit()
+                    selectedArticles.forEach { article ->
+                        val oldNote = sharedPrefs.getString("${article}_note", "") ?: ""
+                        val newNote = if (oldNote.isEmpty()) bulkCommentText else "$oldNote\n$bulkCommentText"
+                        editor.putString("${article}_note", newNote)
                     }
+                    editor.commit()
+
+                    Toast.makeText(context, "Добавлено", Toast.LENGTH_SHORT).show()
+                    showCommentDialog = false
+                    bulkCommentText = ""
+                    isSelectionMode = false
+                    selectedArticles = emptySet()
                 }) { Text("Сохранить") }
             },
             dismissButton = { TextButton(onClick = { showCommentDialog = false }) { Text("Отмена") } }
@@ -2361,7 +2420,6 @@ fun ModelListScreen(
             if (isSelectionMode) {
                 TopAppBar(
                     title = {
-                        // 👇 Иконка + счетчик вместо текста
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 Icons.Default.CheckCircle,
@@ -2469,15 +2527,15 @@ fun ModelListScreen(
                             label = "Принято",
                             tint = Color(0xFF4CAF50),
                             onClick = {
-                                scope.launch(Dispatchers.IO) {
-                                    selectedArticles.forEach { article ->
-                                        sharedPrefs.edit().apply {
-                                            putString("${article}_decision", "ПРИНЯТО")
-                                            putString("${article}_date", SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date()))
-                                            apply()
-                                        }
-                                    }
+                                // 👇 Исправление: один редактор и commit()
+                                val editor = sharedPrefs.edit()
+                                val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
+                                selectedArticles.forEach { article ->
+                                    editor.putString("${article}_decision", "ПРИНЯТО")
+                                    editor.putString("${article}_date", date)
                                 }
+                                editor.commit()
+
                                 isSelectionMode = false
                                 selectedArticles = emptySet()
                                 Toast.makeText(context, "Статус ПРИНЯТО установлен", Toast.LENGTH_SHORT).show()
@@ -2488,15 +2546,15 @@ fun ModelListScreen(
                             label = "Доработка",
                             tint = Color(0xFFF9A825),
                             onClick = {
-                                scope.launch(Dispatchers.IO) {
-                                    selectedArticles.forEach { article ->
-                                        sharedPrefs.edit().apply {
-                                            putString("${article}_decision", "ДОРАБОТКА")
-                                            putString("${article}_date", SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date()))
-                                            apply()
-                                        }
-                                    }
+                                // 👇 Исправление: один редактор и commit()
+                                val editor = sharedPrefs.edit()
+                                val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
+                                selectedArticles.forEach { article ->
+                                    editor.putString("${article}_decision", "ДОРАБОТКА")
+                                    editor.putString("${article}_date", date)
                                 }
+                                editor.commit()
+
                                 isSelectionMode = false
                                 selectedArticles = emptySet()
                                 Toast.makeText(context, "Статус ДОРАБОТКА установлен", Toast.LENGTH_SHORT).show()
@@ -2507,15 +2565,15 @@ fun ModelListScreen(
                             label = "Не готово",
                             tint = Color(0xFFF44336),
                             onClick = {
-                                scope.launch(Dispatchers.IO) {
-                                    selectedArticles.forEach { article ->
-                                        sharedPrefs.edit().apply {
-                                            putString("${article}_decision", "НЕ ГОТОВО")
-                                            putString("${article}_date", SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date()))
-                                            apply()
-                                        }
-                                    }
+                                // 👇 Исправление: один редактор и commit()
+                                val editor = sharedPrefs.edit()
+                                val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
+                                selectedArticles.forEach { article ->
+                                    editor.putString("${article}_decision", "НЕ ГОТОВО")
+                                    editor.putString("${article}_date", date)
                                 }
+                                editor.commit()
+
                                 isSelectionMode = false
                                 selectedArticles = emptySet()
                                 Toast.makeText(context, "Статус НЕ ГОТОВО установлен", Toast.LENGTH_SHORT).show()
@@ -3232,7 +3290,6 @@ fun InspectionScreen(
                     shape = RoundedCornerShape(16.dp),
                     minLines = 3,
                     textStyle = MaterialTheme.typography.bodyMedium,
-                    // 👇 Добавлен KeyboardType.Text для поддержки голосового ввода
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                     colors = OutlinedTextFieldDefaults.colors(
                         unfocusedContainerColor = Color.White,
