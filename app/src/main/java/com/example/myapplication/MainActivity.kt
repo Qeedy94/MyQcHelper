@@ -1545,6 +1545,10 @@ fun SettingsTab(
     var showUpdateDialog by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateManager.UpdateInfo?>(null) }
 
+    // 👇 Состояния для скачивания
+    var isDownloading by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0f) }
+
     var showThemeMenu by remember { mutableStateOf(false) }
     val themeLabel = when (themeMode) {
         "light" -> "Светлая"
@@ -1658,7 +1662,7 @@ fun SettingsTab(
             modifier = Modifier.fillMaxWidth().height(50.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-            enabled = !isCheckingUpdate
+            enabled = !isCheckingUpdate && !isDownloading
         ) {
             if (isCheckingUpdate) {
                 CircularProgressIndicator(modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary)
@@ -1681,27 +1685,61 @@ fun SettingsTab(
         Spacer(Modifier.height(16.dp))
     }
 
+    // 👇 Обновленный диалог с индикатором прогресса
     if (showUpdateDialog && updateInfo != null) {
         AlertDialog(
-            onDismissRequest = { showUpdateDialog = false },
+            onDismissRequest = { if (!isDownloading) showUpdateDialog = false },
             shape = RoundedCornerShape(24.dp),
             title = { Text("Доступно обновление", style = MaterialTheme.typography.titleLarge) },
-            text = { Text("Новая версия ${updateInfo!!.version}. Скачать и установить?", style = MaterialTheme.typography.bodyMedium) },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        showUpdateDialog = false
-                        Toast.makeText(context, "Скачивание...", Toast.LENGTH_SHORT).show()
-                        val apk = UpdateManager.downloadApk(context, updateInfo!!.downloadUrl)
-                        if (apk != null) {
-                            UpdateManager.installApk(context, apk)
-                        } else {
-                            Toast.makeText(context, "Ошибка скачивания", Toast.LENGTH_SHORT).show()
-                        }
+            text = {
+                if (isDownloading) {
+                    Column {
+                        Text("Скачивание обновления...", style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { downloadProgress },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text("${(downloadProgress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
                     }
-                }) { Text("Обновить") }
+                } else {
+                    Text("Новая версия ${updateInfo!!.version}. Скачать и установить?", style = MaterialTheme.typography.bodyMedium)
+                }
             },
-            dismissButton = { TextButton(onClick = { showUpdateDialog = false }) { Text("Позже") } }
+            confirmButton = {
+                if (!isDownloading) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            isDownloading = true
+                            downloadProgress = 0f
+
+                            val apk = UpdateManager.downloadApk(
+                                context = context,
+                                url = updateInfo!!.downloadUrl,
+                                onProgress = { downloaded, total ->
+                                    if (total > 0) {
+                                        downloadProgress = downloaded.toFloat() / total
+                                    }
+                                }
+                            )
+
+                            isDownloading = false
+                            if (apk != null) {
+                                showUpdateDialog = false
+                                UpdateManager.installApk(context, apk)
+                            } else {
+                                Toast.makeText(context, "Ошибка скачивания", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }) { Text("Обновить") }
+                }
+            },
+            dismissButton = {
+                if (!isDownloading) {
+                    TextButton(onClick = { showUpdateDialog = false }) { Text("Позже") }
+                }
+            }
         )
     }
 }
@@ -3243,7 +3281,6 @@ fun InspectionScreen(
         }
     }
 
-    // 👇 ДИАЛОГ ТЕСТА (открывается первым при доработке)
     if (showTestDialog) {
         AlertDialog(
             onDismissRequest = { showTestDialog = false },
@@ -3257,8 +3294,6 @@ fun InspectionScreen(
                     saveData()
                     showTestDialog = false
                     Toast.makeText(context, "Отметка о тесте добавлена", Toast.LENGTH_SHORT).show()
-
-                    // 👇 После теста открываем причины доработки
                     if (decision == "ДОРАБОТКА") {
                         showReworkDialog = true
                     }
@@ -3267,7 +3302,6 @@ fun InspectionScreen(
             dismissButton = {
                 TextButton(onClick = {
                     showTestDialog = false
-                    // 👇 Если закрыли без теста, все равно показываем причины
                     if (decision == "ДОРАБОТКА") {
                         showReworkDialog = true
                     }
@@ -3501,7 +3535,6 @@ fun InspectionScreen(
                     onClick = {
                         decision = "ДОРАБОТКА"
                         saveData()
-
                         if (shouldSuggestTest(model) && testDate.isEmpty()) {
                             showTestDialog = true
                         } else {
@@ -3563,7 +3596,7 @@ fun FullScreenImageDialog(uri: Uri, onDismiss: () -> Unit) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Transparent) // 👈 Прозрачный фон
+                .background(Color.Transparent)
                 .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) }
         ) {
             AsyncImage(

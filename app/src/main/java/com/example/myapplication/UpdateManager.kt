@@ -10,6 +10,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.Proxy
+import java.net.ProxySelector
+import java.net.URI
 import java.net.URL
 
 object UpdateManager {
@@ -65,17 +68,45 @@ object UpdateManager {
         return false
     }
 
-    suspend fun downloadApk(context: Context, url: String): File? = withContext(Dispatchers.IO) {
+    suspend fun downloadApk(
+        context: Context,
+        url: String,
+        onProgress: (downloaded: Long, total: Long) -> Unit
+    ): File? = withContext(Dispatchers.IO) {
         try {
             val file = File(context.cacheDir, "update.apk")
             if (file.exists()) file.delete()
 
-            val connection = URL(url).openConnection() as HttpURLConnection
+            val uri = URI(url)
+            // 👇 Пытаемся получить системный прокси (если включен VPN/Clash)
+            val proxy = ProxySelector.getDefault()?.select(uri)?.firstOrNull()
+
+            val connection = if (proxy != null && proxy.type() != Proxy.Type.DIRECT) {
+                URL(url).openConnection(proxy) as HttpURLConnection
+            } else {
+                URL(url).openConnection() as HttpURLConnection
+            }
+
+            // 👇 ВАЖНО: GitHub часто редиректит на CDN, HttpURLConnection по умолчанию не следует редиректам
+            connection.instanceFollowRedirects = true
+            connection.connectTimeout = 20000
+            connection.readTimeout = 20000
             connection.connect()
+
+            val totalSize = connection.contentLengthLong
+            var downloadedSize = 0L
 
             connection.inputStream.use { input ->
                 file.outputStream().use { output ->
-                    input.copyTo(output)
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        downloadedSize += bytesRead
+                        withContext(Dispatchers.Main) {
+                            onProgress(downloadedSize, totalSize)
+                        }
+                    }
                 }
             }
             file
