@@ -15,8 +15,8 @@ import java.net.URL
 object UpdateManager {
 
     // 👇 ЗАМЕНИ НА СВОИ ДАННЫЕ
-    private const val GITHUB_OWNER = "твой_ник"
-    private const val GITHUB_REPO = "название_репозитория"
+    private const val GITHUB_OWNER = "Qeedy94"
+    private const val GITHUB_REPO = "MyQcHelper"
     private const val APK_ASSET_NAME = "app-release.apk"
 
     data class UpdateInfo(val version: String, val downloadUrl: String)

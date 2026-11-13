@@ -27,6 +27,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -154,6 +155,15 @@ fun Modifier.safeCombinedClickable(onTap: () -> Unit, onLongPress: () -> Unit) =
     }
 }
 
+// ================= ЛОГИКА ПРОВЕРКИ ТЕСТА =================
+
+fun shouldSuggestTest(model: ModelInfo): Boolean {
+    val isTextileLining = model.lining.contains("натуральный", true)
+    val sizes = model.sizeBoxes.split(";").mapNotNull { it.substringBefore("-").trim().toIntOrNull() }
+    val hasSmallSizes = sizes.any { it < 27 }
+    return isTextileLining && hasSmallSizes
+}
+
 // ================= TELEGRAM-STYLE CHECKBOX =================
 
 @Composable
@@ -179,7 +189,7 @@ fun TelegramCheckbox(
             .background(if (checked) Color(0xFF3D8DFF) else Color.Transparent)
             .border(
                 width = 2.dp,
-                color = if (checked) Color(0xFF3D8DFF) else Color(0xFFB0B0B0),
+                color = if (checked) Color(0xFF3D8DFF) else MaterialTheme.colorScheme.onSurfaceVariant,
                 shape = CircleShape
             )
             .clickable { onClick() },
@@ -211,14 +221,14 @@ fun AppBottomSheet(
         ModalBottomSheet(
             onDismissRequest = onDismiss,
             sheetState = sheetState,
-            containerColor = Color.White,
+            containerColor = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
             dragHandle = {
                 Box(
                     modifier = Modifier
                         .padding(top = 12.dp, bottom = 8.dp)
                         .size(width = 40.dp, height = 4.dp)
-                        .background(Color(0xFFD0D0D0), RoundedCornerShape(2.dp))
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(2.dp))
                 )
             }
         ) {
@@ -231,6 +241,7 @@ fun AppBottomSheet(
                     Text(
                         title,
                         style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
                     )
                 }
@@ -243,7 +254,7 @@ fun AppBottomSheet(
 @Composable
 fun SheetMenuItem(
     text: String,
-    color: Color = Color.Black,
+    color: Color = MaterialTheme.colorScheme.onSurface,
     icon: ImageVector? = null,
     onClick: () -> Unit
 ) {
@@ -398,7 +409,7 @@ class MainActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_FULLSCREEN
         )
 
-        window.navigationBarColor = android.graphics.Color.parseColor("#F7F7FA")
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
         WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightNavigationBars = true
 
         SingletonImageLoader.setSafe { context ->
@@ -412,11 +423,25 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme(
-                typography = AppTypography
-            ) {
-                Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFFF7F7FA)) {
-                    MainScreen()
+            val context = LocalContext.current
+            val sharedPrefs = remember { context.getSharedPreferences("QC_PREFS", Context.MODE_PRIVATE) }
+            val themeMode = remember { mutableStateOf(sharedPrefs.getString("theme_mode", "system") ?: "system") }
+
+            val darkTheme = when (themeMode.value) {
+                "light" -> false
+                "dark" -> true
+                else -> isSystemInDarkTheme()
+            }
+
+            AppTheme(darkTheme = darkTheme) {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    MainScreen(
+                        themeMode = themeMode.value,
+                        onThemeModeChange = {
+                            themeMode.value = it
+                            sharedPrefs.edit().putString("theme_mode", it).apply()
+                        }
+                    )
                 }
             }
         }
@@ -425,7 +450,10 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen() {
+fun MainScreen(
+    themeMode: String,
+    onThemeModeChange: (String) -> Unit
+) {
     val context = LocalContext.current
     val sharedPrefs = remember { context.getSharedPreferences("QC_PREFS", Context.MODE_PRIVATE) }
     val gson = remember { Gson() }
@@ -565,12 +593,12 @@ fun MainScreen() {
     var selectionModeActive by remember { mutableStateOf(false) }
 
     Scaffold(
-        containerColor = Color(0xFFF7F7FA),
+        containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             if (!selectionModeActive) {
                 NavigationBar(
-                    containerColor = Color.White,
-                    tonalElevation = 8.dp,
+                    containerColor = MaterialTheme.colorScheme.background,
+                    tonalElevation = 0.dp,
                     modifier = Modifier.height(56.dp)
                 ) {
                     NavigationBarItem(
@@ -704,7 +732,12 @@ fun MainScreen() {
                         }
                     }
                 }
-                3 -> SettingsTab(imagesFolderUri, { folderPickerLauncher.launch(null) })
+                3 -> SettingsTab(
+                    imagesFolderUri,
+                    { folderPickerLauncher.launch(null) },
+                    themeMode = themeMode,
+                    onThemeModeChange = onThemeModeChange
+                )
             }
         }
     }
@@ -767,11 +800,11 @@ fun GalleryTab(
         )
     } else {
         Scaffold(
-            containerColor = Color(0xFFF7F7FA),
+            containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 TopAppBar(
                     title = { Text("Макеты", style = MaterialTheme.typography.titleLarge) },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFF7F7FA)),
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                     actions = {
                         IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, null) }
                     }
@@ -790,7 +823,7 @@ fun GalleryTab(
                 )
                 SheetMenuItem(
                     text = "Отмена",
-                    color = Color.Gray,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     icon = Icons.Default.Close,
                     onClick = { showMenu = false }
                 )
@@ -807,7 +840,7 @@ fun GalleryTab(
 
             if (orders.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize().padding(paddingValues), contentAlignment = Alignment.Center) {
-                    Text("Нет заказов. Загрузите Excel.", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                    Text("Нет заказов. Загрузите Excel.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else if (isInitialLoading) {
                 Box(modifier = Modifier.fillMaxSize().padding(paddingValues), contentAlignment = Alignment.Center) {
@@ -816,7 +849,7 @@ fun GalleryTab(
             } else if (displayOrders.isEmpty() && !showAllOrders) {
                 Box(modifier = Modifier.fillMaxSize().padding(paddingValues), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Все заказы имеют макеты 🎉", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                        Text("Все заказы имеют макеты 🎉", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(8.dp))
                         TextButton(onClick = { showAllOrders = true }) {
                             Text("Показать все заказы", style = MaterialTheme.typography.labelLarge)
@@ -834,7 +867,7 @@ fun GalleryTab(
                         Card(
                             modifier = Modifier.fillMaxWidth().safeClickable { selectedOrderForGallery = order },
                             shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                         ) {
                             Row(
@@ -844,10 +877,10 @@ fun GalleryTab(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Text(order.factory, style = MaterialTheme.typography.titleSmall)
-                                        Text("${order.format} ${order.deliveryNum}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                                        Text("${order.format} ${order.deliveryNum}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    Text("Дата: ${order.date}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                                    Text("Моделей: ${order.models.size}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                                    Text("Дата: ${order.date}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("Моделей: ${order.models.size}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 if (unlinked > 0) {
                                     Box(
@@ -1031,7 +1064,7 @@ fun GalleryDetailScreen(
             "Вы уверены, что хотите удалить эту фотографию?",
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             style = MaterialTheme.typography.bodyMedium,
-            color = Color.Gray
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         SheetMenuItem(
             text = "Удалить",
@@ -1049,7 +1082,7 @@ fun GalleryDetailScreen(
         )
         SheetMenuItem(
             text = "Отмена",
-            color = Color.Gray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             icon = Icons.Default.Close,
             onClick = { imageToDelete = null }
         )
@@ -1064,7 +1097,7 @@ fun GalleryDetailScreen(
             "Это фото не привязано ни к одной модели.",
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             style = MaterialTheme.typography.bodyMedium,
-            color = Color.Gray
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         SheetMenuItem(
             text = "Посмотреть",
@@ -1081,7 +1114,7 @@ fun GalleryDetailScreen(
         )
         SheetMenuItem(
             text = "Отмена",
-            color = Color.Gray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             icon = Icons.Default.Close,
             onClick = { orphanActionImage = null }
         )
@@ -1097,7 +1130,7 @@ fun GalleryDetailScreen(
                 "Все модели уже имеют макеты.",
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color.Gray
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
             LazyColumn(
@@ -1127,19 +1160,19 @@ fun GalleryDetailScreen(
     }
 
     Scaffold(
-        containerColor = Color(0xFFF7F7FA),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = { Text("${order.factory} ${order.format} ${order.deliveryNum}", style = MaterialTheme.typography.titleMedium) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFF7F7FA)),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Text("←", fontSize = 28.sp, modifier = Modifier.padding(start = 8.dp))
+                        Text("←", fontSize = 28.sp, modifier = Modifier.padding(start = 8.dp), color = MaterialTheme.colorScheme.onBackground)
                     }
                 },
                 actions = {
                     IconButton(onClick = { galleryLauncher.launch("image/*") }) {
-                        Icon(Icons.Default.Image, contentDescription = "Добавить фото", tint = Color(0xFF6200EE))
+                        Icon(Icons.Default.Image, contentDescription = "Добавить фото", tint = MaterialTheme.colorScheme.primary)
                     }
                 }
             )
@@ -1176,7 +1209,7 @@ fun GalleryDetailScreen(
                 }
             } else if (allImages.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("В папке этого заказа нет макетов.\nНажмите на иконку вверху чтобы добавить.", style = MaterialTheme.typography.bodyMedium, color = Color.Gray, textAlign = TextAlign.Center)
+                    Text("В папке этого заказа нет макетов.\nНажмите на иконку вверху чтобы добавить.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                 }
             } else {
                 LazyVerticalGrid(
@@ -1222,7 +1255,7 @@ fun GalleryDetailScreen(
                                     .build(),
                                 contentDescription = "Макет",
                                 contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize().background(Color.LightGray)
+                                modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant)
                             )
                             if (isOrphan) {
                                 Text(
@@ -1350,14 +1383,14 @@ fun CalendarScreen(
                 if (currentMonth == 0) { currentMonth = 11; currentYear-- }
                 else currentMonth--
             }) {
-                Icon(Icons.Default.ChevronLeft, contentDescription = "Назад", tint = Color(0xFF6200EE))
+                Icon(Icons.Default.ChevronLeft, contentDescription = "Назад", tint = MaterialTheme.colorScheme.primary)
             }
             Text("${monthNames[currentMonth]} $currentYear", style = MaterialTheme.typography.titleMedium)
             IconButton(onClick = {
                 if (currentMonth == 11) { currentMonth = 0; currentYear++ }
                 else currentMonth++
             }) {
-                Icon(Icons.Default.ChevronRight, contentDescription = "Вперед", tint = Color(0xFF6200EE))
+                Icon(Icons.Default.ChevronRight, contentDescription = "Вперед", tint = MaterialTheme.colorScheme.primary)
             }
         }
 
@@ -1365,7 +1398,7 @@ fun CalendarScreen(
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс").forEach { day ->
-                Text(day, style = MaterialTheme.typography.labelSmall, color = Color.Gray, modifier = Modifier.width(40.dp), textAlign = TextAlign.Center)
+                Text(day, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(40.dp), textAlign = TextAlign.Center)
             }
         }
 
@@ -1389,7 +1422,7 @@ fun CalendarScreen(
                                 .clip(CircleShape)
                                 .background(
                                     when {
-                                        isSelected -> Color(0xFF6200EE)
+                                        isSelected -> MaterialTheme.colorScheme.primary
                                         hasWork -> Color(0xFFC8E6C9)
                                         else -> Color.Transparent
                                     }
@@ -1401,7 +1434,7 @@ fun CalendarScreen(
                                 Text(
                                     day.toString(),
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = if (isSelected) Color.White else if (hasWork) Color(0xFF2E7D32) else Color.Black
+                                    color = if (isSelected) Color.White else if (hasWork) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
                                 )
                                 if (hasWork && !isSelected) {
                                     Text(
@@ -1426,13 +1459,13 @@ fun CalendarScreen(
             Spacer(Modifier.height(8.dp))
 
             if (groupedByOrder.isEmpty()) {
-                Text("Нет работы в этот день.", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                Text("Нет работы в этот день.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 groupedByOrder.forEach { (order, models) ->
                     Card(
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F7FA)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
@@ -1452,7 +1485,7 @@ fun CalendarScreen(
                                     "ПРИНЯТО" -> Color(0xFFC8E6C9)
                                     "ДОРАБОТКА" -> Color(0xFFFFF9C4)
                                     "НЕ ГОТОВО", "НЕ ПРИНЯТО" -> Color(0xFFFFCDD2)
-                                    else -> Color.White
+                                    else -> MaterialTheme.colorScheme.surface
                                 }
 
                                 Card(
@@ -1463,7 +1496,7 @@ fun CalendarScreen(
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
                                         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                            Text(model.article, style = MaterialTheme.typography.titleSmall)
+                                            Text(model.article, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
                                             Text(decision, style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
                                         }
                                         if (note.isNotEmpty()) {
@@ -1493,7 +1526,12 @@ fun CalendarScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsTab(folderUri: String?, onSelectFolder: () -> Unit) {
+fun SettingsTab(
+    folderUri: String?,
+    onSelectFolder: () -> Unit,
+    themeMode: String,
+    onThemeModeChange: (String) -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val versionName = remember(context) {
@@ -1507,6 +1545,13 @@ fun SettingsTab(folderUri: String?, onSelectFolder: () -> Unit) {
     var showUpdateDialog by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateManager.UpdateInfo?>(null) }
 
+    var showThemeMenu by remember { mutableStateOf(false) }
+    val themeLabel = when (themeMode) {
+        "light" -> "Светлая"
+        "dark" -> "Темная"
+        else -> "Системная"
+    }
+
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -1518,7 +1563,7 @@ fun SettingsTab(folderUri: String?, onSelectFolder: () -> Unit) {
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
             onClick = onSelectFolder
         ) {
@@ -1539,11 +1584,58 @@ fun SettingsTab(folderUri: String?, onSelectFolder: () -> Unit) {
                         if (folderUri == null) "Не выбрана — нажмите, чтобы выбрать"
                         else "Нажмите, чтобы сменить папку",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Text("Сменить", color = Color(0xFF03A9F4), style = MaterialTheme.typography.labelLarge)
             }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            onClick = { showThemeMenu = true }
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.DarkMode,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Тема оформления", style = MaterialTheme.typography.titleSmall)
+                    Text(themeLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        DropdownMenu(
+            expanded = showThemeMenu,
+            onDismissRequest = { showThemeMenu = false },
+            modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+        ) {
+            DropdownMenuItem(
+                text = { Text("Системная", style = MaterialTheme.typography.bodyMedium) },
+                onClick = { onThemeModeChange("system"); showThemeMenu = false }
+            )
+            DropdownMenuItem(
+                text = { Text("Светлая", style = MaterialTheme.typography.bodyMedium) },
+                onClick = { onThemeModeChange("light"); showThemeMenu = false }
+            )
+            DropdownMenuItem(
+                text = { Text("Темная", style = MaterialTheme.typography.bodyMedium) },
+                onClick = { onThemeModeChange("dark"); showThemeMenu = false }
+            )
         }
 
         Spacer(Modifier.height(12.dp))
@@ -1565,11 +1657,11 @@ fun SettingsTab(folderUri: String?, onSelectFolder: () -> Unit) {
             },
             modifier = Modifier.fillMaxWidth().height(50.dp),
             shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6200EE)),
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
             enabled = !isCheckingUpdate
         ) {
             if (isCheckingUpdate) {
-                CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary)
             } else {
                 Icon(Icons.Default.Update, contentDescription = null, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
@@ -1578,12 +1670,12 @@ fun SettingsTab(folderUri: String?, onSelectFolder: () -> Unit) {
         }
 
         Spacer(Modifier.weight(1f))
-        Text("Версия приложения: $versionName", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        Text("Версия приложения: $versionName", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(4.dp))
         Text(
             "They coded them as gods Qeedy and k1mle",
             style = MaterialTheme.typography.bodySmall,
-            color = Color.Gray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(16.dp))
@@ -1707,7 +1799,7 @@ fun OrderListScreen(
             "Вы уверены, что хотите удалить ВСЕ заказы? Это действие нельзя отменить.",
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             style = MaterialTheme.typography.bodyMedium,
-            color = Color.Gray
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         SheetMenuItem(
             text = "Удалить все",
@@ -1717,7 +1809,7 @@ fun OrderListScreen(
         )
         SheetMenuItem(
             text = "Отмена",
-            color = Color.Gray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             icon = Icons.Default.Close,
             onClick = { showClearDialog = false }
         )
@@ -1751,7 +1843,7 @@ fun OrderListScreen(
         )
         SheetMenuItem(
             text = "Отмена",
-            color = Color.Gray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             icon = Icons.Default.Close,
             onClick = { orderMenuForLongPress = null }
         )
@@ -1775,7 +1867,7 @@ fun OrderListScreen(
         )
         SheetMenuItem(
             text = "Отмена",
-            color = Color.Gray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             icon = Icons.Default.Close,
             onClick = { showTopMenu = false }
         )
@@ -1829,7 +1921,7 @@ fun OrderListScreen(
                 },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6200EE))
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) {
                 Text("Применить", style = MaterialTheme.typography.labelLarge)
             }
@@ -1886,14 +1978,14 @@ fun OrderListScreen(
     }
 
     Scaffold(
-        containerColor = Color(0xFFF7F7FA),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = { Text("Мои заказы", style = MaterialTheme.typography.titleLarge) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFF7F7FA)),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 actions = {
                     IconButton(onClick = { refreshAction() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Обновить", tint = Color(0xFF6200EE))
+                        Icon(Icons.Default.Refresh, contentDescription = "Обновить", tint = MaterialTheme.colorScheme.primary)
                     }
                     IconButton(onClick = {
                         tempSelectedFactories = selectedFactories
@@ -1902,7 +1994,7 @@ fun OrderListScreen(
                         Icon(
                             Icons.Default.FilterList,
                             contentDescription = "Фабрики",
-                            tint = if (selectedFactories.isNotEmpty()) Color(0xFFFF9800) else Color(0xFF6200EE)
+                            tint = if (selectedFactories.isNotEmpty()) Color(0xFFFF9800) else MaterialTheme.colorScheme.primary
                         )
                     }
                     IconButton(onClick = { showTopMenu = true }) {
@@ -1917,7 +2009,7 @@ fun OrderListScreen(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = onSearchQueryChange,
-                    leadingIcon = { Icon(if (searchType == "По заказу") Icons.Default.Search else Icons.Default.ShoppingCart, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(24.dp)) },
+                    leadingIcon = { Icon(if (searchType == "По заказу") Icons.Default.Search else Icons.Default.ShoppingCart, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, keyboardType = KeyboardType.Text),
                     keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
                     modifier = Modifier.fillMaxWidth().height(50.dp),
@@ -1925,10 +2017,10 @@ fun OrderListScreen(
                     textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Start),
                     placeholder = { Text(if (searchType == "По заказу") "Поиск по заказу..." else "Поиск по артикулу...", style = MaterialTheme.typography.bodyMedium) },
                     colors = OutlinedTextFieldDefaults.colors(
-                        unfocusedContainerColor = Color.White,
-                        focusedContainerColor = Color.White,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
                         unfocusedBorderColor = Color.Transparent,
-                        focusedBorderColor = Color(0xFF6200EE)
+                        focusedBorderColor = MaterialTheme.colorScheme.primary
                     ),
                     singleLine = true,
                     trailingIcon = {
@@ -1940,13 +2032,13 @@ fun OrderListScreen(
                             }
                             Box {
                                 IconButton(onClick = { showSearchMenu = true }) {
-                                    Icon(Icons.Default.ArrowDropDown, null, tint = Color.Gray)
+                                    Icon(Icons.Default.ArrowDropDown, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 DropdownMenu(
                                     expanded = showSearchMenu,
                                     onDismissRequest = { showSearchMenu = false },
                                     offset = DpOffset(x = 0.dp, y = 0.dp),
-                                    modifier = Modifier.background(Color.White)
+                                    modifier = Modifier.background(MaterialTheme.colorScheme.surface)
                                 ) {
                                     DropdownMenuItem(text = { Text("По заказу", style = MaterialTheme.typography.bodyMedium) }, onClick = { onSearchTypeChange("По заказу"); showSearchMenu = false; onSearchQueryChange("") })
                                     DropdownMenuItem(text = { Text("По артикулу", style = MaterialTheme.typography.bodyMedium) }, onClick = { onSearchTypeChange("По артикулу"); showSearchMenu = false; onSearchQueryChange("") })
@@ -1962,7 +2054,7 @@ fun OrderListScreen(
                     modifier = Modifier.padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Фабрики: ${selectedFactories.joinToString(", ")}", color = Color(0xFF6200EE), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                    Text("Фабрики: ${selectedFactories.joinToString(", ")}", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
                     TextButton(onClick = { selectedFactories = emptySet() }) { Text("Сбросить", style = MaterialTheme.typography.labelMedium) }
                 }
             }
@@ -1973,14 +2065,14 @@ fun OrderListScreen(
                         Card(modifier = Modifier.fillMaxWidth().safeClickable { onModelClick(order.id, model.article) }) {
                             Column(modifier = Modifier.padding(12.dp)) {
                                 Text(model.article, style = MaterialTheme.typography.titleMedium)
-                                Text("${order.factory} ${order.format} ${order.deliveryNum}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                                Text("${order.factory} ${order.format} ${order.deliveryNum}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
                 }
             } else if (orders.isEmpty() && !isAutoScanning) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Нет заказов. Закиньте Excel-файл в папку.", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                    Text("Нет заказов. Закиньте Excel-файл в папку.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 LazyColumn(
@@ -1993,7 +2085,7 @@ fun OrderListScreen(
                         val notAccepted = rejected + rework
                         val overdueDays = getOverdueDays(order.date)
                         val isAllAccepted = accepted > 0 && accepted == order.models.size
-                        val bgColor = if (isAllAccepted) Color(0xFFCBEFD1) else Color.White
+                        val bgColor = if (isAllAccepted) Color(0xFFCBEFD1) else MaterialTheme.colorScheme.surface
 
                         Card(
                             modifier = Modifier
@@ -2022,13 +2114,13 @@ fun OrderListScreen(
                                         Text(
                                             "${order.format} | ${order.deliveryNum}",
                                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                                            color = Color.Gray
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     Spacer(Modifier.height(4.dp))
 
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("Дата: ${order.date}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp), color = Color.Gray)
+                                        Text("Дата: ${order.date}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         if (overdueDays > 0) {
                                             Spacer(Modifier.width(6.dp))
                                             Text(
@@ -2041,7 +2133,7 @@ fun OrderListScreen(
                                     Spacer(Modifier.height(4.dp))
 
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("Моделей: ${order.models.size}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp), color = Color.Gray)
+                                        Text("Моделей: ${order.models.size}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         Spacer(Modifier.width(12.dp))
                                         Box(modifier = Modifier.size(8.dp).background(Color(0xFF4CAF50), RoundedCornerShape(4.dp)))
                                         Spacer(Modifier.width(4.dp))
@@ -2133,6 +2225,9 @@ fun ModelListScreen(
     var bulkCommentText by remember { mutableStateOf("") }
     var showDeleteSelectedDialog by remember { mutableStateOf(false) }
 
+    var showBulkTestWarning by remember { mutableStateOf(false) }
+    var bulkTestAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
     LaunchedEffect(isSelectionMode) {
         onSelectionModeChange(isSelectionMode)
     }
@@ -2152,6 +2247,28 @@ fun ModelListScreen(
         }
     }
 
+    if (showBulkTestWarning) {
+        AlertDialog(
+            onDismissRequest = { showBulkTestWarning = false },
+            shape = RoundedCornerShape(24.dp),
+            title = { Text("Внимание!", style = MaterialTheme.typography.titleLarge) },
+            text = { Text("Среди выбранных моделей есть те, которые необходимо отправить на тест (текстильная подкладка и размеры < 27). Продолжить?", style = MaterialTheme.typography.bodyMedium) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showBulkTestWarning = false
+                    bulkTestAction?.invoke()
+                    bulkTestAction = null
+                }) { Text("Да, продолжить") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showBulkTestWarning = false
+                    bulkTestAction = null
+                }) { Text("Отмена") }
+            }
+        )
+    }
+
     if (showCommentDialog) {
         AlertDialog(
             onDismissRequest = { showCommentDialog = false },
@@ -2160,7 +2277,6 @@ fun ModelListScreen(
             text = { OutlinedTextField(value = bulkCommentText, onValueChange = { bulkCommentText = it }, label = { Text("Текст") }, minLines = 3, textStyle = MaterialTheme.typography.bodyMedium) },
             confirmButton = {
                 TextButton(onClick = {
-                    // 👇 Исправление: один редактор и commit()
                     val editor = sharedPrefs.edit()
                     selectedArticles.forEach { article ->
                         val oldNote = sharedPrefs.getString("${article}_note", "") ?: ""
@@ -2310,7 +2426,7 @@ fun ModelListScreen(
                 },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6200EE))
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) {
                 Text("Применить", style = MaterialTheme.typography.labelLarge)
             }
@@ -2343,7 +2459,7 @@ fun ModelListScreen(
         )
         SheetMenuItem(
             text = "Отмена",
-            color = Color.Gray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             icon = Icons.Default.Close,
             onClick = { longPressModel = null }
         )
@@ -2381,7 +2497,7 @@ fun ModelListScreen(
         )
         SheetMenuItem(
             text = "Отмена",
-            color = Color.Gray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             icon = Icons.Default.Close,
             onClick = { showMainMenu = false }
         )
@@ -2415,7 +2531,7 @@ fun ModelListScreen(
     }
 
     Scaffold(
-        containerColor = Color(0xFFF7F7FA),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             if (isSelectionMode) {
                 TopAppBar(
@@ -2424,7 +2540,7 @@ fun ModelListScreen(
                             Icon(
                                 Icons.Default.CheckCircle,
                                 contentDescription = null,
-                                tint = Color(0xFF6200EE),
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(24.dp)
                             )
                             Spacer(Modifier.width(8.dp))
@@ -2434,7 +2550,7 @@ fun ModelListScreen(
                             )
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFF7F7FA)),
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                     navigationIcon = {
                         TextButton(
                             onClick = {
@@ -2442,9 +2558,9 @@ fun ModelListScreen(
                                 selectedArticles = emptySet()
                             }
                         ) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color(0xFF6200EE))
+                            Icon(Icons.Default.ArrowBack, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(4.dp))
-                            Text("Отменить", color = Color(0xFF6200EE), style = MaterialTheme.typography.labelLarge)
+                            Text("Отменить", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
                         }
                     },
                     actions = {
@@ -2460,14 +2576,14 @@ fun ModelListScreen(
                         ) {
                             Text(
                                 if (allSelected) "Снять все" else "Выбрать все",
-                                color = Color(0xFF6200EE),
+                                color = MaterialTheme.colorScheme.primary,
                                 style = MaterialTheme.typography.labelLarge
                             )
                             Spacer(Modifier.width(4.dp))
                             Icon(
                                 if (allSelected) Icons.Default.CheckCircle else Icons.Default.Check,
                                 contentDescription = null,
-                                tint = Color(0xFF6200EE)
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -2485,11 +2601,11 @@ fun ModelListScreen(
                             Text(
                                 "${order.format} • ${order.deliveryNum}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFF7F7FA)),
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
@@ -2497,10 +2613,10 @@ fun ModelListScreen(
                     },
                     actions = {
                         IconButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.Default.Sort, contentDescription = "Сортировка", tint = Color(0xFF6200EE))
+                            Icon(Icons.Default.Sort, contentDescription = "Сортировка", tint = MaterialTheme.colorScheme.primary)
                         }
                         IconButton(onClick = { showCalendar = true }) {
-                            Icon(Icons.Default.DateRange, contentDescription = "Календарь", tint = Color(0xFF6200EE))
+                            Icon(Icons.Default.DateRange, contentDescription = "Календарь", tint = MaterialTheme.colorScheme.primary)
                         }
                         IconButton(onClick = { showMainMenu = true }) {
                             Icon(Icons.Default.MoreVert, contentDescription = "Меню")
@@ -2512,7 +2628,7 @@ fun ModelListScreen(
         bottomBar = {
             if (isSelectionMode) {
                 Surface(
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.surface,
                     tonalElevation = 8.dp
                 ) {
                     Row(
@@ -2527,18 +2643,36 @@ fun ModelListScreen(
                             label = "Принято",
                             tint = Color(0xFF4CAF50),
                             onClick = {
-                                // 👇 Исправление: один редактор и commit()
-                                val editor = sharedPrefs.edit()
-                                val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
-                                selectedArticles.forEach { article ->
-                                    editor.putString("${article}_decision", "ПРИНЯТО")
-                                    editor.putString("${article}_date", date)
+                                val needsTest = selectedArticles.any { article ->
+                                    val m = order.models.find { it.article == article }
+                                    m != null && shouldSuggestTest(m)
                                 }
-                                editor.commit()
+                                val doAction = {
+                                    val editor = sharedPrefs.edit()
+                                    val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
+                                    selectedArticles.forEach { article ->
+                                        editor.putString("${article}_decision", "ПРИНЯТО")
+                                        editor.putString("${article}_date", date)
+                                        val m = order.models.find { it.article == article }
+                                        if (m != null && shouldSuggestTest(m)) {
+                                            val existingTestDate = sharedPrefs.getString("${article}_testDate", "") ?: ""
+                                            if (existingTestDate.isEmpty()) {
+                                                editor.putString("${article}_testDate", date)
+                                            }
+                                        }
+                                    }
+                                    editor.commit()
+                                    isSelectionMode = false
+                                    selectedArticles = emptySet()
+                                    Toast.makeText(context, "Статус ПРИНЯТО установлен", Toast.LENGTH_SHORT).show()
+                                }
 
-                                isSelectionMode = false
-                                selectedArticles = emptySet()
-                                Toast.makeText(context, "Статус ПРИНЯТО установлен", Toast.LENGTH_SHORT).show()
+                                if (needsTest) {
+                                    bulkTestAction = doAction
+                                    showBulkTestWarning = true
+                                } else {
+                                    doAction()
+                                }
                             }
                         )
                         ActionIconButton(
@@ -2546,18 +2680,36 @@ fun ModelListScreen(
                             label = "Доработка",
                             tint = Color(0xFFF9A825),
                             onClick = {
-                                // 👇 Исправление: один редактор и commit()
-                                val editor = sharedPrefs.edit()
-                                val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
-                                selectedArticles.forEach { article ->
-                                    editor.putString("${article}_decision", "ДОРАБОТКА")
-                                    editor.putString("${article}_date", date)
+                                val needsTest = selectedArticles.any { article ->
+                                    val m = order.models.find { it.article == article }
+                                    m != null && shouldSuggestTest(m)
                                 }
-                                editor.commit()
+                                val doAction = {
+                                    val editor = sharedPrefs.edit()
+                                    val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
+                                    selectedArticles.forEach { article ->
+                                        editor.putString("${article}_decision", "ДОРАБОТКА")
+                                        editor.putString("${article}_date", date)
+                                        val m = order.models.find { it.article == article }
+                                        if (m != null && shouldSuggestTest(m)) {
+                                            val existingTestDate = sharedPrefs.getString("${article}_testDate", "") ?: ""
+                                            if (existingTestDate.isEmpty()) {
+                                                editor.putString("${article}_testDate", date)
+                                            }
+                                        }
+                                    }
+                                    editor.commit()
+                                    isSelectionMode = false
+                                    selectedArticles = emptySet()
+                                    Toast.makeText(context, "Статус ДОРАБОТКА установлен", Toast.LENGTH_SHORT).show()
+                                }
 
-                                isSelectionMode = false
-                                selectedArticles = emptySet()
-                                Toast.makeText(context, "Статус ДОРАБОТКА установлен", Toast.LENGTH_SHORT).show()
+                                if (needsTest) {
+                                    bulkTestAction = doAction
+                                    showBulkTestWarning = true
+                                } else {
+                                    doAction()
+                                }
                             }
                         )
                         ActionIconButton(
@@ -2565,7 +2717,6 @@ fun ModelListScreen(
                             label = "Не готово",
                             tint = Color(0xFFF44336),
                             onClick = {
-                                // 👇 Исправление: один редактор и commit()
                                 val editor = sharedPrefs.edit()
                                 val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
                                 selectedArticles.forEach { article ->
@@ -2573,7 +2724,6 @@ fun ModelListScreen(
                                     editor.putString("${article}_date", date)
                                 }
                                 editor.commit()
-
                                 isSelectionMode = false
                                 selectedArticles = emptySet()
                                 Toast.makeText(context, "Статус НЕ ГОТОВО установлен", Toast.LENGTH_SHORT).show()
@@ -2582,7 +2732,7 @@ fun ModelListScreen(
                         ActionIconButton(
                             icon = Icons.Default.EditNote,
                             label = "Коммент",
-                            tint = Color(0xFF6200EE),
+                            tint = MaterialTheme.colorScheme.primary,
                             onClick = { showCommentDialog = true }
                         )
                         ActionIconButton(
@@ -2601,17 +2751,17 @@ fun ModelListScreen(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = onSearchQueryChange,
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(24.dp)) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, keyboardType = KeyboardType.Text),
                     keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).height(50.dp),
                     shape = RoundedCornerShape(14.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Start),
                     colors = OutlinedTextFieldDefaults.colors(
-                        unfocusedContainerColor = Color.White,
-                        focusedContainerColor = Color.White,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
                         unfocusedBorderColor = Color.Transparent,
-                        focusedBorderColor = Color(0xFF6200EE)
+                        focusedBorderColor = MaterialTheme.colorScheme.primary
                     ),
                     singleLine = true,
                     trailingIcon = {
@@ -2629,11 +2779,11 @@ fun ModelListScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         if (selectedDate.isNotEmpty()) {
-                            Text("Дата: $selectedDate", color = Color(0xFF6200EE), style = MaterialTheme.typography.labelMedium)
+                            Text("Дата: $selectedDate", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
                             Spacer(Modifier.width(8.dp))
                         }
                         if (activeSortOptions.isNotEmpty()) {
-                            Text("Статус: ${activeSortOptions.joinToString(", ")}", color = Color(0xFF6200EE), style = MaterialTheme.typography.labelMedium)
+                            Text("Статус: ${activeSortOptions.joinToString(", ")}", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
                             Spacer(Modifier.width(8.dp))
                         }
                         TextButton(onClick = { onSelectedDateChange(""); onSortOptionChange("") }) {
@@ -2656,11 +2806,11 @@ fun ModelListScreen(
                     val testReceived = getTestReceivedDate(model.article)
                     val isSelected = selectedArticles.contains(model.article)
 
-                    val cardColor = if (isSelected) Color(0xFFF0F7FF) else when (status) {
+                    val cardColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else when (status) {
                         "ПРИНЯТО" -> Color(0xFFC8E6C9)
                         "НЕ ПРИНЯТО", "НЕ ГОТОВО" -> Color(0xFFFFCDD2)
                         "ДОРАБОТКА" -> Color(0xFFFFF9C4)
-                        else -> Color.White
+                        else -> MaterialTheme.colorScheme.surface
                     }
 
                     Card(
@@ -2696,13 +2846,13 @@ fun ModelListScreen(
                                 Spacer(Modifier.width(12.dp))
                             }
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(model.article, style = MaterialTheme.typography.titleMedium)
+                                Text(model.article, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                                 if (note.isNotEmpty()) {
                                     val shortNote = if (note.length > 30) note.take(30) + "…" else note
-                                    Text(shortNote, style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(top = 4.dp))
+                                    Text(shortNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
                                 }
                                 if (statusDate.isNotEmpty()) {
-                                    Text("Дата: $statusDate", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(top = 2.dp))
+                                    Text("Дата: $statusDate", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                                 }
                                 if (testSent.isNotEmpty()) {
                                     if (testReceived.isNotEmpty()) {
@@ -2994,10 +3144,10 @@ fun InspectionScreen(
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedContainerColor = Color(0xFFF5F5F5),
-                    focusedContainerColor = Color(0xFFF5F5F5),
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                     unfocusedBorderColor = Color.Transparent,
-                    focusedBorderColor = Color(0xFF6200EE)
+                    focusedBorderColor = MaterialTheme.colorScheme.primary
                 )
             )
             Spacer(Modifier.width(8.dp))
@@ -3011,9 +3161,9 @@ fun InspectionScreen(
                 },
                 modifier = Modifier
                     .size(48.dp)
-                    .background(Color(0xFF6200EE), CircleShape)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape)
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Добавить", tint = Color.White)
+                Icon(Icons.Default.Add, contentDescription = "Добавить", tint = MaterialTheme.colorScheme.onPrimary)
             }
         }
     }
@@ -3093,6 +3243,7 @@ fun InspectionScreen(
         }
     }
 
+    // 👇 ДИАЛОГ ТЕСТА (открывается первым при доработке)
     if (showTestDialog) {
         AlertDialog(
             onDismissRequest = { showTestDialog = false },
@@ -3106,14 +3257,27 @@ fun InspectionScreen(
                     saveData()
                     showTestDialog = false
                     Toast.makeText(context, "Отметка о тесте добавлена", Toast.LENGTH_SHORT).show()
+
+                    // 👇 После теста открываем причины доработки
+                    if (decision == "ДОРАБОТКА") {
+                        showReworkDialog = true
+                    }
                 }) { Text("Отправить на тест") }
             },
-            dismissButton = { TextButton(onClick = { showTestDialog = false }) { Text("Закрыть") } }
+            dismissButton = {
+                TextButton(onClick = {
+                    showTestDialog = false
+                    // 👇 Если закрыли без теста, все равно показываем причины
+                    if (decision == "ДОРАБОТКА") {
+                        showReworkDialog = true
+                    }
+                }) { Text("Закрыть") }
+            }
         )
     }
 
     Scaffold(
-        containerColor = Color(0xFFF7F7FA),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = {
@@ -3124,12 +3288,12 @@ fun InspectionScreen(
                             Text(
                                 "${currentOrder.factory} ${currentOrder.format} ${currentOrder.deliveryNum}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (decision.isNotEmpty()) {
-                                Text(decision, style = MaterialTheme.typography.labelSmall, color = Color(0xFF6200EE))
+                                Text(decision, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                             }
                             if (testReceivedDate.isNotEmpty()) {
                                 Spacer(Modifier.width(8.dp))
@@ -3141,10 +3305,10 @@ fun InspectionScreen(
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFF7F7FA)),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Text("←", fontSize = 28.sp, modifier = Modifier.padding(start = 8.dp))
+                        Text("←", fontSize = 28.sp, modifier = Modifier.padding(start = 8.dp), color = MaterialTheme.colorScheme.onBackground)
                     }
                 },
                 actions = {
@@ -3176,7 +3340,7 @@ fun InspectionScreen(
             )
             SheetMenuItem(
                 text = "Отмена",
-                color = Color.Gray,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 icon = Icons.Default.Close,
                 onClick = { showMenu = false }
             )
@@ -3193,7 +3357,7 @@ fun InspectionScreen(
             Card(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                 shape = RoundedCornerShape(0.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 if (isLoadingImages) {
@@ -3213,14 +3377,14 @@ fun InspectionScreen(
                                     model = ImageRequest.Builder(context).data(uri).memoryCacheKey(uri.toString()).build(),
                                     contentDescription = "Макет",
                                     contentScale = ContentScale.Fit,
-                                    modifier = Modifier.fillMaxSize().background(Color(0xFFF0F0F0))
+                                    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant)
                                 )
                             }
                         }
                     }
                 } else {
                     Box(modifier = Modifier.fillMaxWidth().height(220.dp), contentAlignment = Alignment.Center) {
-                        Text("Файлы не найдены.", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                        Text("Файлы не найдены.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -3229,7 +3393,7 @@ fun InspectionScreen(
             Text("Цвет: ${model.color}", style = MaterialTheme.typography.bodyLarge)
             Spacer(Modifier.height(16.dp))
 
-            Text("МАТЕРИАЛЫ", style = MaterialTheme.typography.titleSmall, color = Color(0xFF6200EE))
+            Text("МАТЕРИАЛЫ", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(8.dp))
 
             MaterialCheckItem("Верх", model.upper, upperChecked) { upperChecked = it; saveData() }
@@ -3241,14 +3405,14 @@ fun InspectionScreen(
             Divider()
             Spacer(Modifier.height(16.dp))
 
-            Text("УПАКОВКА", style = MaterialTheme.typography.titleSmall, color = Color(0xFF6200EE))
+            Text("УПАКОВКА", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(8.dp))
             InfoRow("Пар в коробе", model.pairsPerBox)
             Text("Размерные: Всего ${model.sizeBoxesCount}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-            Text("Детализация: ${model.sizeBoxes.ifEmpty { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Детализация: ${model.sizeBoxes.ifEmpty { "-" }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
             Text("Ростовочные: Всего ${model.mixedBoxesCount}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-            Text("Состав: ${model.mixedBoxes.ifEmpty { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Состав: ${model.mixedBoxes.ifEmpty { "-" }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
             Spacer(Modifier.height(16.dp))
             Divider()
@@ -3262,7 +3426,7 @@ fun InspectionScreen(
 
             if (testReceivedDate.isNotEmpty()) {
                 Text("Тест получен: $testReceivedDate", style = MaterialTheme.typography.titleSmall, color = Color(0xFF2E7D32))
-                Text("Отправлен на тест: $testDate", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text("Отправлен на тест: $testDate", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
             } else if (testDate.isNotEmpty()) {
                 Text("Отправлено на тест: $testDate", style = MaterialTheme.typography.titleSmall, color = Color.Red)
@@ -3292,8 +3456,8 @@ fun InspectionScreen(
                     textStyle = MaterialTheme.typography.bodyMedium,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                     colors = OutlinedTextFieldDefaults.colors(
-                        unfocusedContainerColor = Color.White,
-                        focusedContainerColor = Color.White
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface
                     )
                 )
                 if (noteText.isNotEmpty()) {
@@ -3301,14 +3465,14 @@ fun InspectionScreen(
                         onClick = { noteText = ""; saveData() },
                         modifier = Modifier.align(Alignment.TopEnd).padding(end = 8.dp, top = 16.dp).size(28.dp)
                     ) {
-                        Icon(Icons.Default.Clear, contentDescription = "Очистить", tint = Color.Gray, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Clear, contentDescription = "Очистить", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                     }
                 }
                 IconButton(
                     onClick = { showPhotoSourceDialog = true },
                     modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 12.dp).size(36.dp)
                 ) {
-                    Icon(Icons.Default.PhotoCamera, contentDescription = "Добавить фото", tint = Color(0xFF6200EE), modifier = Modifier.size(24.dp))
+                    Icon(Icons.Default.PhotoCamera, contentDescription = "Добавить фото", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
                 }
             }
 
@@ -3325,7 +3489,7 @@ fun InspectionScreen(
                     onClick = {
                         decision = "ПРИНЯТО"
                         saveData()
-                        if (shouldSuggestTest(model, testDate)) showTestDialog = true
+                        if (shouldSuggestTest(model) && testDate.isEmpty()) showTestDialog = true
                     },
                     modifier = Modifier.weight(1.1f).height(46.dp),
                     shape = RoundedCornerShape(14.dp),
@@ -3337,7 +3501,12 @@ fun InspectionScreen(
                     onClick = {
                         decision = "ДОРАБОТКА"
                         saveData()
-                        showReworkDialog = true
+
+                        if (shouldSuggestTest(model) && testDate.isEmpty()) {
+                            showTestDialog = true
+                        } else {
+                            showReworkDialog = true
+                        }
                     },
                     modifier = Modifier.weight(1.1f).height(46.dp),
                     shape = RoundedCornerShape(14.dp),
@@ -3373,14 +3542,6 @@ fun InspectionScreen(
     }
 }
 
-fun shouldSuggestTest(model: ModelInfo, testDate: String): Boolean {
-    if (testDate.isNotEmpty()) return false
-    val isTextileLining = model.lining.contains("натуральный", true)
-    val sizes = model.sizeBoxes.split(";").mapNotNull { it.substringBefore("-").trim().toIntOrNull() }
-    val hasSmallSizes = sizes.any { it < 27 }
-    return isTextileLining && hasSmallSizes
-}
-
 // ================= ПОЛНОЭКРАННЫЙ ПРОСМОТР =================
 
 @Composable
@@ -3388,20 +3549,28 @@ fun FullScreenImageDialog(uri: Uri, onDismiss: () -> Unit) {
     val context = LocalContext.current
     var scale by remember { mutableStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+
     val state = rememberTransformableState { zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(1f, 5f)
-        offset += panChange
+        if (scale > 1f) {
+            offset += panChange
+        } else {
+            offset = Offset.Zero
+        }
     }
 
     Dialog(onDismissRequest = onDismiss) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Transparent)
+                .background(Color.Transparent) // 👈 Прозрачный фон
                 .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) }
         ) {
             AsyncImage(
-                model = ImageRequest.Builder(context).data(uri).memoryCacheKey(uri.toString()).build(),
+                model = ImageRequest.Builder(context)
+                    .data(uri)
+                    .memoryCacheKey(uri.toString())
+                    .build(),
                 contentDescription = "Просмотр",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
@@ -3530,7 +3699,7 @@ fun MaterialCheckItem(title: String, value: String, checked: Boolean, onCheckedC
         Checkbox(checked = checked, onCheckedChange = onCheckedChange)
         Column {
             Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            Text(value.ifEmpty { "-" }, style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
+            Text(value.ifEmpty { "-" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -3578,11 +3747,11 @@ fun CalendarDialog(
                                 Box(
                                     modifier = Modifier
                                         .size(40.dp)
-                                        .background(if (isSelected) Color(0xFF6200EE) else if (hasChecks) Color(0xFFC8E6C9) else Color.Transparent, RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) MaterialTheme.colorScheme.primary else if (hasChecks) Color(0xFFC8E6C9) else Color.Transparent, RoundedCornerShape(8.dp))
                                         .safeClickable { onDateSelected(dateStr) },
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text(currentDay.toString(), style = MaterialTheme.typography.bodyMedium, color = if (isSelected) Color.White else Color.Black)
+                                    Text(currentDay.toString(), style = MaterialTheme.typography.bodyMedium, color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface)
                                 }
                                 currentDay++
                             }
