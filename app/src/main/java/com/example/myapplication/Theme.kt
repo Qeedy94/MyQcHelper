@@ -6,6 +6,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
 // Светлая палитра
 private val LightColors = lightColorScheme(
@@ -54,3 +55,18 @@ fun AppTheme(
         content = content
     )
 }
+
+
+// ================= ЦВЕТА СТАТУСОВ (светлая тема = прежние значения) =================
+@Composable
+fun isAppDark(): Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f
+
+@Composable fun acceptedBg(): Color = if (isAppDark()) Color(0xFF1E3A29) else Color(0xFFC8E6C9)
+@Composable fun allAcceptedBg(): Color = if (isAppDark()) Color(0xFF1E3A29) else Color(0xFFCBEFD1)
+@Composable fun rejectedBg(): Color = if (isAppDark()) Color(0xFF4A2326) else Color(0xFFFFCDD2)
+@Composable fun reworkBg(): Color = if (isAppDark()) Color(0xFF4A4120) else Color(0xFFFFF9C4)
+
+@Composable fun successText(): Color = if (isAppDark()) Color(0xFFA5D6A7) else Color(0xFF2E7D32)
+@Composable fun warnText(): Color = if (isAppDark()) Color(0xFFFFB74D) else Color(0xFFF57C00)
+@Composable fun statusLabelColor(): Color = if (isAppDark()) MaterialTheme.colorScheme.onSurface else Color.DarkGray
+@Composable fun subtleText(): Color = if (isAppDark()) MaterialTheme.colorScheme.onSurfaceVariant else Color.Gray

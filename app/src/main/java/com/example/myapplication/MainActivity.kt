@@ -1206,7 +1206,7 @@ fun GalleryDetailScreen(
                         onClick = { showModelListForLink = true; orphanActionImage = null },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                         shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800), contentColor = Color.White)
                     ) {
                         Text("Модели без макетов (${modelsWithoutImages.size})", style = MaterialTheme.typography.labelLarge)
                     }
@@ -1443,7 +1443,7 @@ fun CalendarScreen(
                                 .background(
                                     when {
                                         isSelected -> MaterialTheme.colorScheme.primary
-                                        hasWork -> Color(0xFFC8E6C9)
+                                        hasWork -> acceptedBg()
                                         else -> Color.Transparent
                                     }
                                 )
@@ -1454,13 +1454,13 @@ fun CalendarScreen(
                                 Text(
                                     day.toString(),
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = if (isSelected) Color.White else if (hasWork) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
+                                    color = if (isSelected) Color.White else if (hasWork) successText() else MaterialTheme.colorScheme.onSurface
                                 )
                                 if (hasWork && !isSelected) {
                                     Text(
                                         count.toString(),
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFF2E7D32)
+                                        color = successText()
                                     )
                                 }
                             }
@@ -1502,9 +1502,9 @@ fun CalendarScreen(
                                 val testReceived = sharedPrefs.getString("${model.article}_testReceivedDate", "") ?: ""
 
                                 val cardColor = when (decision) {
-                                    "ПРИНЯТО" -> Color(0xFFC8E6C9)
-                                    "ДОРАБОТКА" -> Color(0xFFFFF9C4)
-                                    "НЕ ГОТОВО", "НЕ ПРИНЯТО" -> Color(0xFFFFCDD2)
+                                    "ПРИНЯТО" -> acceptedBg()
+                                    "ДОРАБОТКА" -> reworkBg()
+                                    "НЕ ГОТОВО", "НЕ ПРИНЯТО" -> rejectedBg()
                                     else -> MaterialTheme.colorScheme.surface
                                 }
 
@@ -1517,18 +1517,18 @@ fun CalendarScreen(
                                     Column(modifier = Modifier.padding(10.dp)) {
                                         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                                             Text(model.article, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-                                            Text(decision, style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
+                                            Text(decision, style = MaterialTheme.typography.labelSmall, color = statusLabelColor())
                                         }
                                         if (note.isNotEmpty()) {
                                             Spacer(Modifier.height(4.dp))
-                                            Text(note, style = MaterialTheme.typography.bodySmall, color = Color.Gray, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                            Text(note, style = MaterialTheme.typography.bodySmall, color = subtleText(), maxLines = 2, overflow = TextOverflow.Ellipsis)
                                         }
                                         if (testDate.isNotEmpty()) {
                                             Spacer(Modifier.height(4.dp))
                                             if (testReceived.isNotEmpty()) {
-                                                Text("Тест: ✓ $testReceived", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2E7D32))
+                                                Text("Тест: ✓ $testReceived", style = MaterialTheme.typography.labelSmall, color = successText())
                                             } else {
-                                                Text("На тесте с: $testDate", style = MaterialTheme.typography.labelSmall, color = Color(0xFFF57C00))
+                                                Text("На тесте с: $testDate", style = MaterialTheme.typography.labelSmall, color = warnText())
                                             }
                                         }
                                     }
@@ -2140,7 +2140,7 @@ fun OrderListScreen(
                         val notAccepted = rejected + rework
                         val overdueDays = getOverdueDays(order.date)
                         val isAllAccepted = accepted > 0 && accepted == order.models.size
-                        val bgColor = if (isAllAccepted) Color(0xFFCBEFD1) else MaterialTheme.colorScheme.surface
+                        val bgColor = if (isAllAccepted) allAcceptedBg() else MaterialTheme.colorScheme.surface
 
                         Card(
                             modifier = Modifier
@@ -2862,9 +2862,9 @@ fun ModelListScreen(
                     val isSelected = selectedArticles.contains(model.article)
 
                     val cardColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else when (status) {
-                        "ПРИНЯТО" -> Color(0xFFC8E6C9)
-                        "НЕ ПРИНЯТО", "НЕ ГОТОВО" -> Color(0xFFFFCDD2)
-                        "ДОРАБОТКА" -> Color(0xFFFFF9C4)
+                        "ПРИНЯТО" -> acceptedBg()
+                        "НЕ ПРИНЯТО", "НЕ ГОТОВО" -> rejectedBg()
+                        "ДОРАБОТКА" -> reworkBg()
                         else -> MaterialTheme.colorScheme.surface
                     }
 
@@ -2914,21 +2914,21 @@ fun ModelListScreen(
                                         Text(
                                             "Тест получен: $testReceived",
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFF2E7D32),
+                                            color = successText(),
                                             modifier = Modifier.padding(top = 2.dp)
                                         )
                                     } else {
                                         Text(
                                             "На тесте с: $testSent",
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFFF57C00),
+                                            color = warnText(),
                                             modifier = Modifier.padding(top = 2.dp)
                                         )
                                     }
                                 }
                             }
                             if (status.isNotEmpty()) {
-                                Text(status, style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
+                                Text(status, style = MaterialTheme.typography.labelSmall, color = statusLabelColor())
                             }
                         }
                     }
@@ -3348,10 +3348,10 @@ fun InspectionScreen(
                             }
                             if (testReceivedDate.isNotEmpty()) {
                                 Spacer(Modifier.width(8.dp))
-                                Text("Тест: ✓ $testReceivedDate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2E7D32))
+                                Text("Тест: ✓ $testReceivedDate", style = MaterialTheme.typography.labelSmall, color = successText())
                             } else if (testDate.isNotEmpty()) {
                                 Spacer(Modifier.width(8.dp))
-                                Text("На тесте: $testDate", style = MaterialTheme.typography.labelSmall, color = Color(0xFFF57C00))
+                                Text("На тесте: $testDate", style = MaterialTheme.typography.labelSmall, color = warnText())
                             }
                         }
                     }
@@ -3476,7 +3476,7 @@ fun InspectionScreen(
             }
 
             if (testReceivedDate.isNotEmpty()) {
-                Text("Тест получен: $testReceivedDate", style = MaterialTheme.typography.titleSmall, color = Color(0xFF2E7D32))
+                Text("Тест получен: $testReceivedDate", style = MaterialTheme.typography.titleSmall, color = successText())
                 Text("Отправлен на тест: $testDate", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
             } else if (testDate.isNotEmpty()) {
@@ -3491,7 +3491,7 @@ fun InspectionScreen(
                     },
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                     shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32), contentColor = Color.White)
                 ) { Text("Тест получен", style = MaterialTheme.typography.labelLarge) }
                 Spacer(Modifier.height(8.dp))
             }
@@ -3545,7 +3545,7 @@ fun InspectionScreen(
                     modifier = Modifier.weight(1.1f).height(46.dp),
                     shape = RoundedCornerShape(14.dp),
                     contentPadding = PaddingValues(0.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = if (decision == "ПРИНЯТО") Color(0xFF2E7D32) else Color(0xFF4CAF50))
+                    colors = ButtonDefaults.buttonColors(containerColor = if (decision == "ПРИНЯТО") Color(0xFF2E7D32) else Color(0xFF4CAF50), contentColor = Color.White)
                 ) { Text("ПРИНЯТО", style = MaterialTheme.typography.labelSmall) }
 
                 Button(
@@ -3575,7 +3575,7 @@ fun InspectionScreen(
                     modifier = Modifier.weight(0.8f).height(46.dp),
                     shape = RoundedCornerShape(14.dp),
                     contentPadding = PaddingValues(0.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = if (decision == "НЕ ГОТОВО" || decision == "НЕ ПРИНЯТО") Color(0xFFC62828) else Color(0xFFF44336))
+                    colors = ButtonDefaults.buttonColors(containerColor = if (decision == "НЕ ГОТОВО" || decision == "НЕ ПРИНЯТО") Color(0xFFC62828) else Color(0xFFF44336), contentColor = Color.White)
                 ) { Text("НЕ ГОТОВО", style = MaterialTheme.typography.labelSmall) }
             }
 
@@ -3797,7 +3797,7 @@ fun CalendarDialog(
                                 Box(
                                     modifier = Modifier
                                         .size(40.dp)
-                                        .background(if (isSelected) MaterialTheme.colorScheme.primary else if (hasChecks) Color(0xFFC8E6C9) else Color.Transparent, RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) MaterialTheme.colorScheme.primary else if (hasChecks) acceptedBg() else Color.Transparent, RoundedCornerShape(8.dp))
                                         .safeClickable { onDateSelected(dateStr) },
                                     contentAlignment = Alignment.Center
                                 ) {
