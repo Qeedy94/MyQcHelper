@@ -13,3 +13,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Собранные релизы (их место в GitHub Releases / облаке, не в git)
+/app/release/
+*.apk
+*.aab

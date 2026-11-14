@@ -47,13 +47,6 @@
 -dontwarn org.openxmlformats.**
 -dontwarn java.awt.Shape
 # Правила для Apache POI и XMLBeans (чтобы Excel читался в релизе)
--keep class org.apache.poi.** { *; }
--keep class org.apache.xmlbeans.** { *; }
--keep class org.openxmlformats.** { *; }
--keep class schemaorg_apache_xmlbeans.** { *; }
--dontwarn org.apache.poi.**
--dontwarn org.apache.xmlbeans.**
--dontwarn org.openxmlformats.**
 -dontwarn schemaorg_apache_xmlbeans.**
 
 # Правила для Gson (если используется)

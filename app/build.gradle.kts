@@ -21,9 +21,10 @@ android {
 
     buildTypes {
         release {
-            // Включаем R8 (минификацию) по старинке
+            // R8 (минификация) выключен: правила для POI/Gson уже лежат в proguard-rules.pro,
+            // перед включением нужно проверить release-сборку на устройстве
             isMinifyEnabled = false
-            // Включаем сжатие ресурсов (рекомендуется вместе с минификацией)
+            // Сжатие ресурсов работает только вместе с минификацией
             isShrinkResources = false
 
             proguardFiles(
@@ -48,11 +49,25 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
+    // Нужен для иконок вне базового набора (PhotoCamera, Visibility, UploadFile и др.)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
+    // Тема Theme.SplashScreen в themes.xml
+    implementation(libs.androidx.core.splashscreen)
+    // Работа с папками через SAF (DocumentFile)
+    implementation(libs.androidx.documentfile)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // Отображение картинок (Coil 3)
+    implementation(libs.coil.compose)
+    // Сохранение заказов в SharedPreferences (JSON)
+    implementation(libs.gson)
+    // Чтение Excel
+    implementation(libs.poi.ooxml)
+    implementation("androidx.appcompat:appcompat:1.6.1")
+
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
@@ -60,21 +75,6 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
-    implementation("androidx.activity:activity-compose:1.8.2")
-    // Библиотека для чтения Excel
-    implementation("org.apache.poi:poi-ooxml:5.2.3")
-    // Библиотека для работы с файлами
-    implementation("androidx.documentfile:documentfile:1.0.1")
-    // Библиотека для распознавания текста на картинках (OCR)
-    implementation("com.google.mlkit:text-recognition:16.0.1")
-    // Библиотека для красивого отображения картинок (Coil)
-    implementation("io.coil-kt:coil-compose:2.5.0")
-    implementation("com.google.code.gson:gson:2.10.1")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.documentfile:documentfile:1.0.1")
-    implementation("androidx.core:core-splashscreen:1.0.1")
-    implementation("io.coil-kt.coil3:coil-compose:3.2.0")
 }
 androidComponents {
     onVariants { variant ->
