@@ -7,97 +7,116 @@ import android.os.Build
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.URI
 import java.net.URL
+import java.util.zip.ZipInputStream
 
 object UpdateManager {
 
-    // 👇 ЗАМЕНИ НА СВОИ ДАННЫЕ
-    private const val GITHUB_OWNER = "Qeedy94"
-    private const val GITHUB_REPO = "MyQcHelper"
-    private const val APK_ASSET_NAME = "app-release.apk"
+    private const val BUCKET_URL = "https://myqchelper.oss-cn-hongkong.aliyuncs.com"
 
     data class UpdateInfo(val version: String, val downloadUrl: String)
 
     suspend fun checkForUpdate(currentVersion: String): UpdateInfo? = withContext(Dispatchers.IO) {
         try {
-            val apiUrl = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
-            val connection = URL(apiUrl).openConnection() as HttpURLConnection
+            val listUrl = "$BUCKET_URL/?list-type=2"
+            val uri = URI(listUrl)
+            val proxy = ProxySelector.getDefault()?.select(uri)?.firstOrNull()
+            val connection = if (proxy != null && proxy.type() != Proxy.Type.DIRECT) {
+                URL(listUrl).openConnection(proxy) as HttpURLConnection
+            } else {
+                URL(listUrl).openConnection() as HttpURLConnection
+            }
+
             connection.requestMethod = "GET"
-            connection.setRequestProperty("Accept", "application/vnd.github+json")
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
 
             if (connection.responseCode != 200) return@withContext null
 
-            val response = connection.inputStream.bufferedReader().readText()
-            val json = JSONObject(response)
-            val tagName = json.getString("tag_name").removePrefix("v")
+            val xml = connection.inputStream.bufferedReader().readText()
 
-            if (isNewerVersion(tagName, currentVersion)) {
-                val assets = json.getJSONArray("assets")
-                for (i in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(i)
-                    if (asset.getString("name") == APK_ASSET_NAME) {
-                        return@withContext UpdateInfo(
-                            version = tagName,
-                            downloadUrl = asset.getString("browser_download_url")
-                        )
-                    }
-                }
+            // 👇 Ищем ZIP-архивы, а не APK
+            val regex = Regex("""<Key>([^<]*Punta_destroyer_v(\d+(?:\.\d+)*)[^<]*\.zip)</Key>""")
+            val matches = regex.findAll(xml).map {
+                Pair(it.groupValues[1], it.groupValues[2])
+            }.distinct().toList()
+
+            if (matches.isEmpty()) return@withContext null
+
+            val latest = matches.maxWithOrNull { a, b -> compareVersions(a.second, b.second) }
+                ?: return@withContext null
+
+            val latestFileName = latest.first
+            val latestVersion = latest.second
+
+            if (isNewerVersion(latestVersion, currentVersion)) {
+                val encodedPath = java.net.URLEncoder.encode(latestFileName, "UTF-8")
+                    .replace("+", "%20")
+                    .replace("%2F", "/")
+                val downloadUrl = "$BUCKET_URL/$encodedPath"
+                return@withContext UpdateInfo(version = latestVersion, downloadUrl = downloadUrl)
             }
             null
         } catch (e: Exception) {
             e.printStackTrace()
             null
         }
+
+    }
+
+    private fun compareVersions(a: String, b: String): Int {
+        val aParts = a.split(".").mapNotNull { it.toIntOrNull() }
+        val bParts = b.split(".").mapNotNull { it.toIntOrNull() }
+        for (i in 0 until maxOf(aParts.size, bParts.size)) {
+            val av = aParts.getOrElse(i) { 0 }
+            val bv = bParts.getOrElse(i) { 0 }
+            if (av != bv) return av.compareTo(bv)
+        }
+        return 0
     }
 
     private fun isNewerVersion(latest: String, current: String): Boolean {
-        val latestParts = latest.split(".").mapNotNull { it.toIntOrNull() }
-        val currentParts = current.split(".").mapNotNull { it.toIntOrNull() }
-        for (i in 0 until maxOf(latestParts.size, currentParts.size)) {
-            val l = latestParts.getOrElse(i) { 0 }
-            val c = currentParts.getOrElse(i) { 0 }
-            if (l > c) return true
-            if (l < c) return false
-        }
-        return false
+        return compareVersions(latest, current) > 0
     }
 
-    suspend fun downloadApk(
+    // 👇 Эта функция теперь скачивает ZIP и распаковывает из него APK
+    suspend fun downloadAndExtractApk(
         context: Context,
         url: String,
         onProgress: (downloaded: Long, total: Long) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         try {
-            val file = File(context.cacheDir, "update.apk")
-            if (file.exists()) file.delete()
+            val zipFile = File(context.cacheDir, "update.zip")
+            if (zipFile.exists()) zipFile.delete()
 
             val uri = URI(url)
-            // 👇 Пытаемся получить системный прокси (если включен VPN/Clash)
             val proxy = ProxySelector.getDefault()?.select(uri)?.firstOrNull()
-
             val connection = if (proxy != null && proxy.type() != Proxy.Type.DIRECT) {
                 URL(url).openConnection(proxy) as HttpURLConnection
             } else {
                 URL(url).openConnection() as HttpURLConnection
             }
 
-            // 👇 ВАЖНО: GitHub часто редиректит на CDN, HttpURLConnection по умолчанию не следует редиректам
             connection.instanceFollowRedirects = true
             connection.connectTimeout = 20000
             connection.readTimeout = 20000
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MyQcHelper/1.0")
             connection.connect()
+
+            if (connection.responseCode != 200) return@withContext null
 
             val totalSize = connection.contentLengthLong
             var downloadedSize = 0L
 
+            // Скачиваем ZIP
             connection.inputStream.use { input ->
-                file.outputStream().use { output ->
+                zipFile.outputStream().use { output ->
                     val buffer = ByteArray(8192)
                     var bytesRead: Int
                     while (input.read(buffer).also { bytesRead = it } != -1) {
@@ -109,7 +128,28 @@ object UpdateManager {
                     }
                 }
             }
-            file
+
+            // 👇 Распаковываем APK из ZIP
+            val apkFile = File(context.cacheDir, "update.apk")
+            if (apkFile.exists()) apkFile.delete()
+
+            ZipInputStream(zipFile.inputStream()).use { zipInput ->
+                var entry = zipInput.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && entry.name.endsWith(".apk", true)) {
+                        FileOutputStream(apkFile).use { output ->
+                            zipInput.copyTo(output)
+                        }
+                        break // Нашли APK — выходим
+                    }
+                    zipInput.closeEntry()
+                    entry = zipInput.nextEntry
+                }
+            }
+
+            zipFile.delete() // Удаляем временный ZIP
+
+            if (apkFile.exists()) apkFile else null
         } catch (e: Exception) {
             e.printStackTrace()
             null

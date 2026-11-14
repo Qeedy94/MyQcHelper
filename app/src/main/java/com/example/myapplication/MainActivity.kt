@@ -158,10 +158,30 @@ fun Modifier.safeCombinedClickable(onTap: () -> Unit, onLongPress: () -> Unit) =
 // ================= ЛОГИКА ПРОВЕРКИ ТЕСТА =================
 
 fun shouldSuggestTest(model: ModelInfo): Boolean {
-    val isTextileLining = model.lining.contains("натуральный", true)
+    val lowerLining = model.lining.lowercase()
+    val lowerInsole = model.insole.lowercase()
+
+    val positiveKeywords = listOf("текстиль", "войлок", "шерсть", "шерстяной", "мех", "натуральн")
+    val negativeKeywords = listOf("синтетическ", "искусственн")
+
+    // Проверяем подкладку
+    val liningHasPositive = positiveKeywords.any { lowerLining.contains(it) }
+    val liningHasNegative = negativeKeywords.any { lowerLining.contains(it) }
+    val isLiningTestable = liningHasPositive && !liningHasNegative
+
+    // Проверяем стельку
+    val insoleHasPositive = positiveKeywords.any { lowerInsole.contains(it) }
+    val insoleHasNegative = negativeKeywords.any { lowerInsole.contains(it) }
+    val isInsoleTestable = insoleHasPositive && !insoleHasNegative
+
+    // Достаточно, чтобы тестовый материал был ХОТЯ БЫ В ОДНОМ из них
+    val hasTestableMaterial = isLiningTestable || isInsoleTestable
+
+    // Проверка размеров
     val sizes = model.sizeBoxes.split(";").mapNotNull { it.substringBefore("-").trim().toIntOrNull() }
     val hasSmallSizes = sizes.any { it < 27 }
-    return isTextileLining && hasSmallSizes
+
+    return hasTestableMaterial && hasSmallSizes
 }
 
 // ================= TELEGRAM-STYLE CHECKBOX =================
@@ -1545,7 +1565,6 @@ fun SettingsTab(
     var showUpdateDialog by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateManager.UpdateInfo?>(null) }
 
-    // 👇 Состояния для скачивания
     var isDownloading by remember { mutableStateOf(false) }
     var downloadProgress by remember { mutableStateOf(0f) }
 
@@ -1685,7 +1704,6 @@ fun SettingsTab(
         Spacer(Modifier.height(16.dp))
     }
 
-    // 👇 Обновленный диалог с индикатором прогресса
     if (showUpdateDialog && updateInfo != null) {
         AlertDialog(
             onDismissRequest = { if (!isDownloading) showUpdateDialog = false },
@@ -1714,7 +1732,7 @@ fun SettingsTab(
                             isDownloading = true
                             downloadProgress = 0f
 
-                            val apk = UpdateManager.downloadApk(
+                            val apk = UpdateManager.downloadAndExtractApk(
                                 context = context,
                                 url = updateInfo!!.downloadUrl,
                                 onProgress = { downloaded, total ->
@@ -1743,7 +1761,6 @@ fun SettingsTab(
         )
     }
 }
-
 // ================= ЭКРАН 1: СПИСОК ЗАКАЗОВ =================
 
 @OptIn(ExperimentalMaterial3Api::class)
