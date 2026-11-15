@@ -33,6 +33,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -130,7 +132,16 @@ fun HoldableActionArea(
     Box(
         modifier = modifier
             .then(interactionModifier)
-            .semantics(mergeDescendants = true) { role = Role.Button }
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                if (!enabled) disabled()
+                if (enabled) {
+                    onClick(label = if (requireHold) "Подтвердить действие" else null) {
+                        currentOnClick()
+                        true
+                    }
+                }
+            }
     ) {
         content(holdProgress)
     }
@@ -168,7 +179,13 @@ fun HoldableActionButton(
                     .padding(contentPadding),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text, style = textStyle, textAlign = TextAlign.Center)
+                Text(
+                    text = text,
+                    style = textStyle,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 if (requireHold && holdProgress > 0f) {
                     LinearProgressIndicator(
                         progress = { holdProgress },

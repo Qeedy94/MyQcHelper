@@ -6,15 +6,18 @@ import android.net.Uri
 import android.os.Build
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.URI
 import java.net.URL
 import java.util.zip.ZipInputStream
+import kotlin.coroutines.coroutineContext
 
 object UpdateManager {
 
@@ -22,52 +25,56 @@ object UpdateManager {
 
     data class UpdateInfo(val version: String, val downloadUrl: String)
 
-    suspend fun checkForUpdate(currentVersion: String): UpdateInfo? = withContext(Dispatchers.IO) {
+    sealed interface CheckResult {
+        data class Available(val info: UpdateInfo) : CheckResult
+        data object UpToDate : CheckResult
+        data class Error(val cause: Exception) : CheckResult
+    }
+
+    suspend fun checkForUpdate(currentVersion: String): CheckResult = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
         try {
-            val listUrl = "$BUCKET_URL/?list-type=2"
-            val uri = URI(listUrl)
-            val proxy = ProxySelector.getDefault()?.select(uri)?.firstOrNull()
-            val connection = if (proxy != null && proxy.type() != Proxy.Type.DIRECT) {
-                URL(listUrl).openConnection(proxy) as HttpURLConnection
-            } else {
-                URL(listUrl).openConnection() as HttpURLConnection
+            val activeConnection = openConnection("$BUCKET_URL/?list-type=2")
+            connection = activeConnection
+            activeConnection.requestMethod = "GET"
+            activeConnection.connectTimeout = 15000
+            activeConnection.readTimeout = 15000
+            if (activeConnection.responseCode != HttpURLConnection.HTTP_OK) {
+                throw IOException("HTTP ${activeConnection.responseCode}")
             }
-
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-
-            if (connection.responseCode != 200) return@withContext null
-
-            val xml = connection.inputStream.bufferedReader().readText()
-
-            // 👇 Ищем ZIP-архивы, а не APK
-            val regex = Regex("""<Key>([^<]*Punta_destroyer_v(\d+(?:\.\d+)*)[^<]*\.zip)</Key>""")
-            val matches = regex.findAll(xml).map {
-                Pair(it.groupValues[1], it.groupValues[2])
-            }.distinct().toList()
-
-            if (matches.isEmpty()) return@withContext null
-
-            val latest = matches.maxWithOrNull { a, b -> compareVersions(a.second, b.second) }
-                ?: return@withContext null
-
-            val latestFileName = latest.first
-            val latestVersion = latest.second
-
-            if (isNewerVersion(latestVersion, currentVersion)) {
-                val encodedPath = java.net.URLEncoder.encode(latestFileName, "UTF-8")
-                    .replace("+", "%20")
-                    .replace("%2F", "/")
-                val downloadUrl = "$BUCKET_URL/$encodedPath"
-                return@withContext UpdateInfo(version = latestVersion, downloadUrl = downloadUrl)
-            }
-            null
+            val xml = activeConnection.inputStream.bufferedReader().use { it.readText() }
+            val latest = findLatestUpdate(xml, currentVersion)
+            if (latest == null) CheckResult.UpToDate else CheckResult.Available(latest)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            e.printStackTrace()
-            null
+            CheckResult.Error(e)
+        } finally {
+            connection?.disconnect()
         }
+    }
 
+    internal fun findLatestUpdate(xml: String, currentVersion: String): UpdateInfo? {
+        val regex = Regex("""<Key>([^<]*Punta_destroyer_v(\d+(?:\.\d+)*)[^<]*\.zip)</Key>""")
+        val latest = regex.findAll(xml)
+            .map { it.groupValues[1] to it.groupValues[2] }
+            .distinct()
+            .maxWithOrNull { a, b -> compareVersions(a.second, b.second) }
+            ?: return null
+        if (!isNewerVersion(latest.second, currentVersion)) return null
+        val encodedPath = java.net.URLEncoder.encode(latest.first, "UTF-8")
+            .replace("+", "%20")
+            .replace("%2F", "/")
+        return UpdateInfo(latest.second, "$BUCKET_URL/$encodedPath")
+    }
+
+    private fun openConnection(url: String): HttpURLConnection {
+        val proxy = ProxySelector.getDefault()?.select(URI(url))?.firstOrNull()
+        return if (proxy != null && proxy.type() != Proxy.Type.DIRECT) {
+            URL(url).openConnection(proxy) as HttpURLConnection
+        } else {
+            URL(url).openConnection() as HttpURLConnection
+        }
     }
 
     private fun compareVersions(a: String, b: String): Int {
@@ -81,45 +88,40 @@ object UpdateManager {
         return 0
     }
 
-    private fun isNewerVersion(latest: String, current: String): Boolean {
-        return compareVersions(latest, current) > 0
-    }
+    private fun isNewerVersion(latest: String, current: String): Boolean =
+        compareVersions(latest, current) > 0
 
-    // 👇 Эта функция теперь скачивает ZIP и распаковывает из него APK
     suspend fun downloadAndExtractApk(
         context: Context,
         url: String,
         onProgress: (downloaded: Long, total: Long) -> Unit
     ): File? = withContext(Dispatchers.IO) {
+        val zipFile = File(context.cacheDir, "update.zip")
+        val apkFile = File(context.cacheDir, "update.apk")
+        var connection: HttpURLConnection? = null
         try {
-            val zipFile = File(context.cacheDir, "update.zip")
-            if (zipFile.exists()) zipFile.delete()
-
-            val uri = URI(url)
-            val proxy = ProxySelector.getDefault()?.select(uri)?.firstOrNull()
-            val connection = if (proxy != null && proxy.type() != Proxy.Type.DIRECT) {
-                URL(url).openConnection(proxy) as HttpURLConnection
-            } else {
-                URL(url).openConnection() as HttpURLConnection
+            val activeConnection = openConnection(url)
+            connection = activeConnection
+            zipFile.delete()
+            apkFile.delete()
+            activeConnection.instanceFollowRedirects = true
+            activeConnection.connectTimeout = 20000
+            activeConnection.readTimeout = 20000
+            activeConnection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MyQcHelper/1.0")
+            activeConnection.connect()
+            if (activeConnection.responseCode != HttpURLConnection.HTTP_OK) {
+                throw IOException("HTTP ${activeConnection.responseCode}")
             }
 
-            connection.instanceFollowRedirects = true
-            connection.connectTimeout = 20000
-            connection.readTimeout = 20000
-            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MyQcHelper/1.0")
-            connection.connect()
-
-            if (connection.responseCode != 200) return@withContext null
-
-            val totalSize = connection.contentLengthLong
+            val totalSize = activeConnection.contentLengthLong
             var downloadedSize = 0L
-
-            // Скачиваем ZIP
-            connection.inputStream.use { input ->
+            activeConnection.inputStream.use { input ->
                 zipFile.outputStream().use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val bytesRead = input.read(buffer)
+                        if (bytesRead == -1) break
                         output.write(buffer, 0, bytesRead)
                         downloadedSize += bytesRead
                         withContext(Dispatchers.Main) {
@@ -129,30 +131,29 @@ object UpdateManager {
                 }
             }
 
-            // 👇 Распаковываем APK из ZIP
-            val apkFile = File(context.cacheDir, "update.apk")
-            if (apkFile.exists()) apkFile.delete()
-
             ZipInputStream(zipFile.inputStream()).use { zipInput ->
                 var entry = zipInput.nextEntry
                 while (entry != null) {
+                    coroutineContext.ensureActive()
                     if (!entry.isDirectory && entry.name.endsWith(".apk", true)) {
-                        FileOutputStream(apkFile).use { output ->
-                            zipInput.copyTo(output)
-                        }
-                        break // Нашли APK — выходим
+                        FileOutputStream(apkFile).use { output -> zipInput.copyTo(output) }
+                        break
                     }
                     zipInput.closeEntry()
                     entry = zipInput.nextEntry
                 }
             }
-
-            zipFile.delete() // Удаляем временный ZIP
-
-            if (apkFile.exists()) apkFile else null
+            if (apkFile.exists() && apkFile.length() > 0L) apkFile else null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            apkFile.delete()
+            throw e
         } catch (e: Exception) {
             e.printStackTrace()
+            apkFile.delete()
             null
+        } finally {
+            zipFile.delete()
+            connection?.disconnect()
         }
     }
 
@@ -160,7 +161,6 @@ object UpdateManager {
         val intent = Intent(Intent.ACTION_VIEW)
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-
         val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         } else {

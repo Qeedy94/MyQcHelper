@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.view.Window
 import android.view.WindowManager
 import android.widget.Toast
@@ -19,7 +20,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -54,6 +55,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -84,11 +86,14 @@ import coil3.request.ImageRequest
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.apache.poi.ss.usermodel.WorkbookFactory
 import java.io.File
 import java.io.InputStream
 import java.text.SimpleDateFormat
+import java.time.LocalDate
 import java.util.*
 
 // ================= МОДЕЛИ ДАННЫХ =================
@@ -117,9 +122,7 @@ data class Order(
     val deliveryNum: String,
     val date: String,
     val models: List<ModelInfo>
-) {
-    fun getDisplayFolderName(): String = "${factory}_${format}_${deliveryNum}_${date.replace(".", "_")}"
-}
+)
 
 // ================= ВСПОМОГАТЕЛЬНЫЕ МОДИФИКАТОРЫ =================
 
@@ -221,25 +224,32 @@ fun TelegramCheckbox(
 
     Box(
         modifier = Modifier
-            .size(24.dp)
+            .size(48.dp)
             .clip(CircleShape)
-            .background(if (checked) Color(0xFF3D8DFF) else Color.Transparent)
-            .border(
-                width = 2.dp,
-                color = if (checked) Color(0xFF3D8DFF) else MaterialTheme.colorScheme.onSurfaceVariant,
-                shape = CircleShape
-            )
-            .clickable { onClick() },
+            .toggleable(value = checked, role = androidx.compose.ui.semantics.Role.Checkbox) { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            Icons.Default.Check,
-            contentDescription = "Выбрано",
-            tint = Color.White,
+        Box(
             modifier = Modifier
-                .size(16.dp)
-                .graphicsLayer(scaleX = scale, scaleY = scale, alpha = alpha)
-        )
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(if (checked) Color(0xFF3D8DFF) else Color.Transparent)
+                .border(
+                    width = 2.dp,
+                    color = if (checked) Color(0xFF3D8DFF) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    shape = CircleShape
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier
+                    .size(16.dp)
+                    .graphicsLayer(scaleX = scale, scaleY = scale, alpha = alpha)
+            )
+        }
     }
 }
 
@@ -317,19 +327,36 @@ fun SheetMenuItem(
 
 // ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
 
-fun loadSavedOrders(sharedPrefs: android.content.SharedPreferences): List<Order> {
+data class SavedOrdersResult(
+    val orders: List<Order> = emptyList(),
+    val corruptedJson: String? = null
+)
+
+internal fun decodeSavedOrders(json: String): List<Order> {
+    val type = object : com.google.gson.reflect.TypeToken<List<Order>>() {}.type
+    val loaded: List<Order> = Gson().fromJson(json, type) ?: emptyList()
+    return loaded.map { order ->
+        if (order.internalFolderName.isBlank()) {
+            order.copy(internalFolderName = "${order.factory}_${order.format}_${order.deliveryNum}_${order.date.replace(".", "_")}")
+        } else order
+    }
+}
+
+fun loadSavedOrders(sharedPrefs: android.content.SharedPreferences): SavedOrdersResult {
+    val json = try {
+        sharedPrefs.getString("saved_orders", null)
+    } catch (e: Exception) {
+        return SavedOrdersResult(
+            corruptedJson = sharedPrefs.all["saved_orders"]?.toString()
+                ?: "saved_orders имеет неподдерживаемый тип"
+        )
+    } ?: return SavedOrdersResult()
     return try {
-        val json = sharedPrefs.getString("saved_orders", null)
-        if (json != null) {
-            val type = object : com.google.gson.reflect.TypeToken<List<Order>>() {}.type
-            val loaded: List<Order> = Gson().fromJson(json, type) ?: emptyList()
-            loaded.map { order ->
-                if (order.internalFolderName.isBlank()) {
-                    order.copy(internalFolderName = "${order.factory}_${order.format}_${order.deliveryNum}_${order.date.replace(".", "_")}")
-                } else order
-            }
-        } else emptyList()
-    } catch (e: Exception) { emptyList() }
+        SavedOrdersResult(orders = decodeSavedOrders(json))
+    } catch (e: Exception) {
+        e.printStackTrace()
+        SavedOrdersResult(corruptedJson = json)
+    }
 }
 
 fun getOrderStats(order: Order, sharedPrefs: android.content.SharedPreferences): Triple<Int, Int, Int> {
@@ -360,6 +387,19 @@ fun getOverdueDays(dateStr: String): Int {
         if (diff <= 0) 0 else (diff / (1000 * 60 * 60 * 24)).toInt()
     } catch (e: Exception) { 0 }
 }
+
+internal fun mondayFirstDayOffset(year: Int, monthZeroBased: Int): Int =
+    LocalDate.of(year, monthZeroBased + 1, 1).dayOfWeek.value - 1
+
+internal fun searchModelsByArticle(
+    orders: List<Order>,
+    query: String,
+    selectedFactories: Set<String>
+): List<Pair<Order, ModelInfo>> = orders
+    .filter { selectedFactories.isEmpty() || it.factory in selectedFactories }
+    .flatMap { order ->
+        order.models.filter { it.article.contains(query, ignoreCase = true) }.map { order to it }
+    }
 
 fun normalizeArticle(article: String): String =
     article.trim()
@@ -435,6 +475,21 @@ fun findCommentsColumnIndex(sheet: org.apache.poi.ss.usermodel.Sheet): Int {
     return -1
 }
 
+fun getDocumentDisplayName(context: Context, uri: Uri): String? = try {
+    context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    )?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+    }
+} catch (e: Exception) {
+    null
+}
+
 // ================= ГЛАВНЫЙ КЛАСС =================
 
 class MainActivity : ComponentActivity() {
@@ -448,7 +503,6 @@ class MainActivity : ComponentActivity() {
         )
 
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
-        WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightNavigationBars = true
 
         SingletonImageLoader.setSafe { context ->
             ImageLoader.Builder(context)
@@ -472,6 +526,12 @@ class MainActivity : ComponentActivity() {
             }
 
             AppTheme(darkTheme = darkTheme) {
+                val navigationBarColor = MaterialTheme.colorScheme.surface.toArgb()
+                SideEffect {
+                    window.navigationBarColor = navigationBarColor
+                    WindowInsetsControllerCompat(window, window.decorView)
+                        .isAppearanceLightNavigationBars = !darkTheme
+                }
                 Surface(modifier = Modifier.fillMaxSize()) {
                     MainScreen(
                         themeMode = themeMode.value,
@@ -497,12 +557,15 @@ fun MainScreen(
     val gson = remember { Gson() }
     val scope = rememberCoroutineScope()
 
-    var orders by remember {
-        val savedOrders = loadSavedOrders(sharedPrefs)
-        ModelProgressStore.migrateLegacyData(sharedPrefs, savedOrders)
-        mutableStateOf(savedOrders)
+    var orders by remember { mutableStateOf(emptyList<Order>()) }
+    var ordersLoaded by remember { mutableStateOf(false) }
+    var ordersLoadFailed by remember { mutableStateOf(false) }
+    var ordersLoadAttempt by remember { mutableIntStateOf(0) }
+    val saveOrdersMutex = remember { Mutex() }
+    val savedFolderUri = remember { sharedPrefs.getString("images_folder_uri", null) }
+    var imagesFolderUri by remember {
+        mutableStateOf(savedFolderUri?.takeIf { hasPersistedFolderPermission(context, it) })
     }
-    var imagesFolderUri by remember { mutableStateOf(sharedPrefs.getString("images_folder_uri", null)) }
     var selectedTab by remember { mutableStateOf(0) }
 
     val imagesCache = remember { mutableStateMapOf<String, List<Uri>>() }
@@ -525,6 +588,30 @@ fun MainScreen(
     val orderListState = rememberLazyListState()
     val modelListState = rememberLazyListState()
 
+    LaunchedEffect(ordersLoadAttempt) {
+        ordersLoaded = false
+        ordersLoadFailed = false
+        val result = withContext(Dispatchers.IO) { loadSavedOrders(sharedPrefs) }
+        if (result.corruptedJson != null) {
+            withContext(Dispatchers.IO) {
+                if (!sharedPrefs.contains("saved_orders_corrupt_backup")) {
+                    sharedPrefs.edit().putString("saved_orders_corrupt_backup", result.corruptedJson).commit()
+                }
+            }
+            ordersLoadFailed = true
+        } else {
+            withContext(Dispatchers.IO) { ModelProgressStore.migrateLegacyData(sharedPrefs, result.orders) }
+            orders = result.orders
+            ordersLoaded = true
+        }
+    }
+
+    LaunchedEffect(savedFolderUri) {
+        if (savedFolderUri != null && imagesFolderUri == null) {
+            Toast.makeText(context, "Доступ к сохранённой папке нужно выдать повторно", Toast.LENGTH_LONG).show()
+        }
+    }
+
     val selectedOrder: Order? = remember(orders, selectedOrderId) {
         selectedOrderId?.let { id -> orders.find { it.id == id } }
     }
@@ -538,73 +625,97 @@ fun MainScreen(
     }
 
     fun saveOrders(newOrders: List<Order>) {
-        ModelProgressStore.migrateLegacyData(sharedPrefs, newOrders)
-        orders = newOrders
-        scope.launch(Dispatchers.IO) {
-            try {
-                val json = gson.toJson(newOrders)
-                sharedPrefs.edit().putString("saved_orders", json).apply()
-            } catch (e: Exception) { e.printStackTrace() }
+        scope.launch {
+            saveOrdersMutex.withLock {
+                val saved = withContext(Dispatchers.IO) {
+                    try {
+                        val json = gson.toJson(newOrders)
+                        ModelProgressStore.migrateLegacyData(sharedPrefs, newOrders)
+                        sharedPrefs.edit().putString("saved_orders", json).commit()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        false
+                    }
+                }
+                if (saved) {
+                    orders = newOrders
+                } else {
+                    Toast.makeText(context, "Не удалось сохранить изменения заказов", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
     fun autoScan() {
         val currentUri = imagesFolderUri
-        if (currentUri == null || isAutoScanning) return
+        if (currentUri == null || isAutoScanning || !ordersLoaded) return
 
         isAutoScanning = true
         scope.launch(Dispatchers.IO) {
             try {
                 val tree = DocumentFile.fromTreeUri(context, Uri.parse(currentUri))
-                val excelFiles = tree?.listFiles()?.filter {
-                    it.name?.endsWith(".xlsx", true) == true || it.name?.endsWith(".xls", true) == true
-                } ?: emptyList()
+                    ?: throw SecurityException("Папка недоступна")
+                val existingOrderIds = orders.mapTo(mutableSetOf()) { it.id }
+                val excelFiles = tree.listFiles().filter { file ->
+                    val name = file.name
+                    name != null && name !in existingOrderIds &&
+                        (name.endsWith(".xlsx", true) || name.endsWith(".xls", true))
+                }
 
-                var newOrdersList = orders.toMutableList()
+                val newOrdersList = orders.toMutableList()
                 var addedCount = 0
+                var folderErrors = 0
 
                 for (file in excelFiles) {
-                    val inputStream = context.contentResolver.openInputStream(file.uri)
-                    val order = parseExcel(inputStream, file.name ?: "")
-                    if (order != null) {
-                        if (newOrdersList.none { it.id == order.id }) {
-                            newOrdersList.add(order)
-                            createOrderFolderSAF(context, currentUri, order.internalFolderName)
-                            addedCount++
-                        }
+                    val order = parseExcel(context.contentResolver.openInputStream(file.uri), file.name ?: "")
+                    if (order != null && newOrdersList.none { it.id == order.id }) {
+                        newOrdersList.add(order)
+                        if (!createOrderFolderSAF(context, currentUri, order.internalFolderName)) folderErrors++
+                        addedCount++
                     }
                 }
 
-                if (addedCount > 0) {
-                    withContext(Dispatchers.Main) {
+                withContext(Dispatchers.Main) {
+                    if (addedCount > 0) {
                         saveOrders(newOrdersList)
                         Toast.makeText(context, "Авто-обновление: добавлено $addedCount заказов", Toast.LENGTH_SHORT).show()
                     }
+                    if (folderErrors > 0) {
+                        Toast.makeText(context, "Не удалось создать папки для $folderErrors заказов", Toast.LENGTH_LONG).show()
+                    }
                 }
             } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Не удалось обновить заказы. Проверьте доступ к папке", Toast.LENGTH_LONG).show()
+                }
             } finally {
-                isAutoScanning = false
+                withContext(Dispatchers.Main) { isAutoScanning = false }
             }
         }
     }
 
-    LaunchedEffect(selectedTab, imagesFolderUri) {
-        if (selectedTab == 0 && imagesFolderUri != null) {
+    LaunchedEffect(selectedTab, imagesFolderUri, ordersLoaded) {
+        if (selectedTab == 0 && imagesFolderUri != null && ordersLoaded) {
             autoScan()
         }
     }
 
     val folderPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
         if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            imagesFolderUri = uri.toString()
-            sharedPrefs.edit().putString("images_folder_uri", uri.toString()).apply()
-            imagesCache.clear()
-            Toast.makeText(context, "Папка выбрана!", Toast.LENGTH_SHORT).show()
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                imagesFolderUri = uri.toString()
+                sharedPrefs.edit().putString("images_folder_uri", uri.toString()).apply()
+                imagesCache.clear()
+                Toast.makeText(context, "Папка выбрана!", Toast.LENGTH_SHORT).show()
+            } catch (e: SecurityException) {
+                Toast.makeText(context, "Не удалось получить постоянный доступ к папке", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
-    if (imagesFolderUri == null) {
+    if (imagesFolderUri == null && ordersLoaded) {
         AlertDialog(
             onDismissRequest = { },
             shape = RoundedCornerShape(24.dp),
@@ -614,18 +725,45 @@ fun MainScreen(
         )
     }
 
-    BackHandler(enabled = calendarSelectedOrderId != null) {
-        calendarSelectedOrderId = null
+    if (!ordersLoaded && !ordersLoadFailed) {
+        Dialog(onDismissRequest = { }) {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text("Загрузка сохранённых заказов…")
+                }
+            }
+        }
     }
 
-    BackHandler(enabled = selectedModel != null) {
+    if (ordersLoadFailed) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Ошибка сохранённых данных") },
+            text = { Text("Список заказов повреждён. Его исходная копия сохранена для диагностики; данные не были перезаписаны. Повторите загрузку после восстановления данных.") },
+            confirmButton = {
+                TextButton(onClick = { ordersLoadAttempt++ }) { Text("Повторить") }
+            }
+        )
+    }
+
+    BackHandler(enabled = selectedTab == 2 && calendarSelectedOrderId != null) {
+        calendarSelectedOrderId = null
+        selectedModelArticle = null
+    }
+
+    BackHandler(enabled = selectedTab == 0 && selectedModel != null) {
         selectedModelArticle = null
         if (cameFromArticleSearch) {
             selectedOrderId = null
             cameFromArticleSearch = false
         }
     }
-    BackHandler(enabled = selectedModel == null && selectedOrder != null) {
+    BackHandler(enabled = selectedTab == 0 && selectedModel == null && selectedOrder != null) {
         selectedOrderId = null
         modelSortOption = ""
         modelSelectedDate = ""
@@ -642,7 +780,7 @@ fun MainScreen(
                 NavigationBar(
                     containerColor = MaterialTheme.colorScheme.background,
                     tonalElevation = 0.dp,
-                    modifier = Modifier.height(56.dp)
+                    modifier = Modifier.heightIn(min = 56.dp)
                 ) {
                     NavigationBarItem(
                         selected = selectedTab == 0,
@@ -685,7 +823,6 @@ fun MainScreen(
                         selectedOrder == null -> OrderListScreen(
                             orders, { selectedOrderId = it.id; cameFromArticleSearch = false }, { saveOrders(it) }, { saveOrders(emptyList()) },
                             imagesFolderUri, isAutoScanning,
-                            onCacheClear = { imagesCache.clear() },
                             listState = orderListState,
                             sharedPrefs = sharedPrefs,
                             refreshAction = { autoScan() },
@@ -967,9 +1104,16 @@ fun GalleryTab(
     }
 }
 
+data class FolderImage(
+    val uri: Uri,
+    val name: String,
+    val normalizedBase: String?
+)
+
 data class GalleryImageItem(
     val uri: Uri,
-    val isOrphan: Boolean
+    val isOrphan: Boolean,
+    val normalizedBase: String?
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -995,39 +1139,28 @@ fun GalleryDetailScreen(
 
     val manualPhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val targetModel = modelToManualAttach
-        if (uri != null && targetModel != null && imagesFolderUri != null) {
+        val folderUri = imagesFolderUri
+        if (uri != null && targetModel != null && folderUri != null) {
             modelToManualAttach = null
             scope.launch(Dispatchers.IO) {
                 val articleName = targetModel.article.replace("/", "-").replace(" ", "-")
-                val tree = DocumentFile.fromTreeUri(context, Uri.parse(imagesFolderUri))
-                val orderFolder = tree?.findFile(order.internalFolderName)
-
-                if (orderFolder != null) {
-                    orderFolder.listFiles().forEach { file ->
-                        val name = file.name ?: ""
-                        val base = macroFileBaseName(name)
-                        if (base != null && base == normalizeArticle(articleName) &&
-                            (name.endsWith(".jpg", true) || name.endsWith(".png", true) || name.endsWith(".jpeg", true))) {
-                            file.delete()
-                        }
+                val orderFolder = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
+                    ?.findFile(order.internalFolderName)
+                val newFile = orderFolder?.createFile("image/jpeg", "$articleName.jpg")
+                val copied = newFile != null && copyDocumentContent(context, uri, newFile)
+                if (copied) {
+                    orderFolder?.listFiles()?.forEach { file ->
+                        val base = file.name?.let(::macroFileBaseName)
+                        if (file.uri != newFile?.uri && base == normalizeArticle(articleName)) file.delete()
                     }
-
-                    val fileName = "${articleName}.jpg"
-                    val newFile = orderFolder.createFile("image/jpeg", fileName)
-
-                    if (newFile != null) {
-                        val inputStream = context.contentResolver.openInputStream(uri)
-                        val outputStream = context.contentResolver.openOutputStream(newFile.uri)
-                        if (inputStream != null && outputStream != null) {
-                            inputStream.copyTo(outputStream)
-                            inputStream.close()
-                            outputStream.close()
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "Фото привязано", Toast.LENGTH_SHORT).show()
-                                isLoading = true
-                            }
-                        }
-                    }
+                }
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        if (copied) "Фото привязано" else "Не удалось сохранить фото",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    if (copied) isLoading = true
                 }
             }
         }
@@ -1038,38 +1171,35 @@ fun GalleryDetailScreen(
         val uri = imagesFolderUri ?: return
         scope.launch(Dispatchers.IO) {
             try {
-                val tree = DocumentFile.fromTreeUri(context, Uri.parse(uri))
-                val orderFolder = tree?.findFile(order.internalFolderName)
-                if (orderFolder != null) {
-                    val articleName = targetModel.article.replace("/", "-").replace(" ", "-")
-
-                    orderFolder.listFiles().forEach { file ->
-                        val name = file.name ?: ""
-                        val base = macroFileBaseName(name)
-                        if (base != null && base == normalizeArticle(articleName) &&
-                            (name.endsWith(".jpg", true) || name.endsWith(".png", true) || name.endsWith(".jpeg", true))) {
+                val orderFolder = DocumentFile.fromTreeUri(context, Uri.parse(uri))
+                    ?.findFile(order.internalFolderName)
+                val articleName = targetModel.article.replace("/", "-").replace(" ", "-")
+                val newFile = orderFolder?.createFile("image/jpeg", "$articleName.jpg")
+                val copied = newFile != null && copyDocumentContent(context, srcUri, newFile)
+                if (copied) {
+                    orderFolder?.listFiles()?.forEach { file ->
+                        val base = file.name?.let(::macroFileBaseName)
+                        if (file.uri != newFile?.uri && file.uri != srcUri && base == normalizeArticle(articleName)) {
                             file.delete()
                         }
                     }
-
-                    val newFile = orderFolder.createFile("image/jpeg", "${articleName}.jpg")
-                    if (newFile != null) {
-                        val inputStream = context.contentResolver.openInputStream(srcUri)
-                        val outputStream = context.contentResolver.openOutputStream(newFile.uri)
-                        if (inputStream != null && outputStream != null) {
-                            inputStream.copyTo(outputStream)
-                            inputStream.close()
-                            outputStream.close()
-                            DocumentFile.fromSingleUri(context, srcUri)?.delete()
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "Привязано к ${targetModel.article}", Toast.LENGTH_SHORT).show()
-                                orphanActionImage = null
-                                isLoading = true
-                            }
-                        }
+                    val sourceDeleted = deleteDocument(context, srcUri)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            if (sourceDeleted) "Привязано к ${targetModel.article}" else "Фото привязано, исходный файл не удалён",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        orphanActionImage = null
+                        isLoading = true
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Ошибка привязки", Toast.LENGTH_SHORT).show()
                     }
                 }
             } catch (e: Exception) {
+                e.printStackTrace()
                 withContext(Dispatchers.Main) {
                     Toast.makeText(context, "Ошибка привязки", Toast.LENGTH_SHORT).show()
                 }
@@ -1078,27 +1208,24 @@ fun GalleryDetailScreen(
     }
 
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-        if (uris.isNotEmpty() && imagesFolderUri != null) {
+        val folderUri = imagesFolderUri
+        if (uris.isNotEmpty() && folderUri != null) {
             scope.launch(Dispatchers.IO) {
-                val tree = DocumentFile.fromTreeUri(context, Uri.parse(imagesFolderUri))
-                val orderFolder = tree?.findFile(order.internalFolderName)
-
-                if (orderFolder != null) {
-                    uris.forEach { uri ->
-                        val fileName = "extra_gallery_${System.currentTimeMillis()}_${(0..999).random()}.jpg"
-                        val newFile = orderFolder.createFile("image/jpeg", fileName)
-                        if (newFile != null) {
-                            val inputStream = context.contentResolver.openInputStream(uri)
-                            val outputStream = context.contentResolver.openOutputStream(newFile.uri)
-                            if (inputStream != null && outputStream != null) {
-                                inputStream.copyTo(outputStream); inputStream.close(); outputStream.close()
-                            }
-                        }
-                    }
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "Добавлено фото: ${uris.size}", Toast.LENGTH_SHORT).show()
-                        isLoading = true
-                    }
+                val orderFolder = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
+                    ?.findFile(order.internalFolderName)
+                var addedCount = 0
+                uris.forEach { uri ->
+                    val fileName = "extra_gallery_${System.currentTimeMillis()}_${(0..999).random()}.jpg"
+                    val newFile = orderFolder?.createFile("image/jpeg", fileName)
+                    if (newFile != null && copyDocumentContent(context, uri, newFile)) addedCount++
+                }
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        if (addedCount == uris.size) "Добавлено фото: $addedCount" else "Добавлено $addedCount из ${uris.size} фото",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    if (addedCount > 0) isLoading = true
                 }
             }
         }
@@ -1108,15 +1235,16 @@ fun GalleryDetailScreen(
         if (imagesFolderUri != null && isLoading) {
             val (loadedImages, loadedSortedImages, loadedModelsWithoutImages) = withContext(Dispatchers.IO) {
                 val images = loadAllImagesFromFolder(context, imagesFolderUri, order)
-                val normalizedArticles = order.models.map { normalizeArticle(it.article) }.toSet()
-                val sorted = images.map { uri ->
-                    val fileName = DocumentFile.fromSingleUri(context, uri)?.name ?: ""
-                    val base = macroFileBaseName(fileName)
+                val normalizedArticles = order.models.mapTo(mutableSetOf()) { normalizeArticle(it.article) }
+                val sorted = images.sortedByDescending { image ->
+                    image.normalizedBase == null || image.normalizedBase !in normalizedArticles
+                }.map { image ->
+                    val base = image.normalizedBase
                     val isLinked = base != null && base in normalizedArticles
-                    GalleryImageItem(uri, isOrphan = !isLinked && base != null) to !isLinked
-                }.sortedByDescending { it.second }.map { it.first }
-                val missing = getModelsWithoutImages(order, images, context)
-                Triple(images, sorted, missing)
+                    GalleryImageItem(image.uri, isOrphan = !isLinked && base != null, normalizedBase = base)
+                }
+                val missing = getModelsWithoutImages(order, images.mapNotNullTo(mutableSetOf()) { it.normalizedBase })
+                Triple(images.map { it.uri }, sorted, missing)
             }
             allImages = loadedImages
             sortedImages = loadedSortedImages
@@ -1139,17 +1267,22 @@ fun GalleryDetailScreen(
         HoldToConfirmButton(
             actionText = "Удалить",
             onConfirm = {
-                val target = imageToDelete!!
+                val target = imageToDelete ?: return@HoldToConfirmButton
                 val remainingImages = allImages.filter { it != target }
-                imageToDelete = null
-                scope.launch(Dispatchers.IO) {
-                    DocumentFile.fromSingleUri(context, target)?.delete()
-                    val missing = getModelsWithoutImages(order, remainingImages, context)
-                    withContext(Dispatchers.Main) {
+                val remainingItems = sortedImages.filter { it.uri != target }
+                scope.launch {
+                    val deleted = withContext(Dispatchers.IO) { deleteDocument(context, target) }
+                    if (deleted) {
                         allImages = remainingImages
-                        sortedImages = sortedImages.filter { it.uri != target }
-                        modelsWithoutImages = missing
+                        sortedImages = remainingItems
+                        modelsWithoutImages = getModelsWithoutImages(
+                            order,
+                            remainingItems.mapNotNullTo(mutableSetOf()) { it.normalizedBase }
+                        )
+                        imageToDelete = null
                         Toast.makeText(context, "Фото удалено", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Не удалось удалить фото", Toast.LENGTH_LONG).show()
                     }
                 }
             },
@@ -1238,7 +1371,14 @@ fun GalleryDetailScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("${order.factory} ${order.format} ${order.deliveryNum}", style = MaterialTheme.typography.titleMedium) },
+                title = {
+                    Text(
+                        "${order.factory} ${order.format} ${order.deliveryNum}",
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -1349,36 +1489,21 @@ fun GalleryDetailScreen(
     }
 }
 
-fun getModelsWithoutImages(order: Order, allImages: List<Uri>, context: Context): List<ModelInfo> {
-    val macroNames = allImages.mapNotNull { uri ->
-        val docFile = DocumentFile.fromSingleUri(context, uri)
-        val fileName = docFile?.name ?: ""
-        macroFileBaseName(fileName)
-    }.toSet()
+internal fun getModelsWithoutImages(order: Order, macroNames: Set<String>): List<ModelInfo> =
+    order.models.filter { normalizeArticle(it.article) !in macroNames }
 
-    return order.models.filter { model ->
-        val key = normalizeArticle(model.article)
-        key !in macroNames
-    }
-}
-
-fun isImageLinkedToModel(fileName: String, models: List<ModelInfo>): Boolean {
-    val base = macroFileBaseName(fileName) ?: return false
-    return models.any { model ->
-        normalizeArticle(model.article) == base
-    }
-}
-
-fun loadAllImagesFromFolder(context: Context, folderUri: String?, order: Order): List<Uri> {
-    val result = mutableListOf<Uri>()
+fun loadAllImagesFromFolder(context: Context, folderUri: String?, order: Order): List<FolderImage> {
+    val result = mutableListOf<FolderImage>()
     if (folderUri == null) return result
     try {
         val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
         val orderFolder = tree?.findFile(order.internalFolderName)
         if (orderFolder != null && orderFolder.isDirectory) {
             orderFolder.listFiles().forEach { file ->
-                if (file.isFile && (file.name?.endsWith(".jpg", true) == true || file.name?.endsWith(".png", true) == true || file.name?.endsWith(".jpeg", true) == true)) {
-                    result.add(file.uri)
+                val name = file.name
+                if (file.isFile && name != null &&
+                    (name.endsWith(".jpg", true) || name.endsWith(".png", true) || name.endsWith(".jpeg", true))) {
+                    result.add(FolderImage(file.uri, name, macroFileBaseName(name)))
                 }
             }
         }
@@ -1430,11 +1555,7 @@ fun CalendarScreen(
     }
 
     val firstDayOfWeek = remember(currentYear, currentMonth) {
-        Calendar.getInstance().apply {
-            set(Calendar.YEAR, currentYear)
-            set(Calendar.MONTH, currentMonth)
-            set(Calendar.DAY_OF_MONTH, 1)
-        }.get(Calendar.DAY_OF_WEEK) - 1
+        mondayFirstDayOffset(currentYear, currentMonth)
     }
 
     val monthNames = arrayOf("Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь")
@@ -1475,7 +1596,7 @@ fun CalendarScreen(
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс").forEach { day ->
-                Text(day, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(40.dp), textAlign = TextAlign.Center)
+                Text(day, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
             }
         }
 
@@ -1486,7 +1607,7 @@ fun CalendarScreen(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 for (dayOfWeek in 0..6) {
                     if ((week == 0 && dayOfWeek < firstDayOfWeek) || day > daysInMonth) {
-                        Spacer(modifier = Modifier.size(40.dp))
+                        Spacer(modifier = Modifier.weight(1f).height(48.dp))
                     } else {
                         val dateStr = String.format("%02d.%02d.%d", day, currentMonth + 1, currentYear)
                         val hasWork = dayCounts.containsKey(dateStr)
@@ -1495,7 +1616,8 @@ fun CalendarScreen(
 
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .weight(1f)
+                                .height(48.dp)
                                 .clip(CircleShape)
                                 .background(
                                     when {
@@ -1629,7 +1751,9 @@ fun SettingsTab(
     var updateInfo by remember { mutableStateOf<UpdateManager.UpdateInfo?>(null) }
 
     var isDownloading by remember { mutableStateOf(false) }
-    var downloadProgress by remember { mutableStateOf(0f) }
+    var downloadProgress by remember { mutableFloatStateOf(0f) }
+    var downloadedBytes by remember { mutableLongStateOf(0L) }
+    var downloadTotal by remember { mutableLongStateOf(-1L) }
 
     var showThemeMenu by remember { mutableStateOf(false) }
     val themeLabel = when (themeMode) {
@@ -1809,18 +1933,24 @@ fun SettingsTab(
             onClick = {
                 scope.launch {
                     isCheckingUpdate = true
-                    val current = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
-                    val info = UpdateManager.checkForUpdate(current)
-                    if (info != null) {
-                        updateInfo = info
-                        showUpdateDialog = true
-                    } else {
-                        Toast.makeText(context, "У вас последняя версия", Toast.LENGTH_SHORT).show()
+                    try {
+                        val current = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
+                        when (val result = UpdateManager.checkForUpdate(current)) {
+                            is UpdateManager.CheckResult.Available -> {
+                                updateInfo = result.info
+                                showUpdateDialog = true
+                            }
+                            UpdateManager.CheckResult.UpToDate ->
+                                Toast.makeText(context, "У вас последняя версия", Toast.LENGTH_SHORT).show()
+                            is UpdateManager.CheckResult.Error ->
+                                Toast.makeText(context, "Не удалось проверить обновления. Проверьте подключение к сети", Toast.LENGTH_LONG).show()
+                        }
+                    } finally {
+                        isCheckingUpdate = false
                     }
-                    isCheckingUpdate = false
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(50.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
             enabled = !isCheckingUpdate && !isDownloading
@@ -1856,12 +1986,18 @@ fun SettingsTab(
                     Column {
                         Text("Скачивание обновления...", style = MaterialTheme.typography.bodyMedium)
                         Spacer(Modifier.height(8.dp))
-                        LinearProgressIndicator(
-                            progress = { downloadProgress },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text("${(downloadProgress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                        if (downloadTotal > 0L) {
+                            LinearProgressIndicator(
+                                progress = { downloadProgress },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text("${(downloadProgress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(4.dp))
+                            Text("Загружено: ${downloadedBytes / 1024 / 1024} МБ", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 } else {
                     Text("Новая версия ${updateInfo!!.version}. Скачать и установить?", style = MaterialTheme.typography.bodyMedium)
@@ -1870,26 +2006,33 @@ fun SettingsTab(
             confirmButton = {
                 if (!isDownloading) {
                     TextButton(onClick = {
+                        val downloadUrl = updateInfo?.downloadUrl ?: return@TextButton
                         scope.launch {
                             isDownloading = true
                             downloadProgress = 0f
-
+                            downloadedBytes = 0L
+                            downloadTotal = -1L
                             val apk = UpdateManager.downloadAndExtractApk(
                                 context = context,
-                                url = updateInfo!!.downloadUrl,
+                                url = downloadUrl,
                                 onProgress = { downloaded, total ->
+                                    downloadedBytes = downloaded
+                                    downloadTotal = total
                                     if (total > 0) {
-                                        downloadProgress = downloaded.toFloat() / total
+                                        downloadProgress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
                                     }
                                 }
                             )
-
                             isDownloading = false
                             if (apk != null) {
                                 showUpdateDialog = false
-                                UpdateManager.installApk(context, apk)
+                                try {
+                                    UpdateManager.installApk(context, apk)
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Не удалось открыть установщик", Toast.LENGTH_LONG).show()
+                                }
                             } else {
-                                Toast.makeText(context, "Ошибка скачивания", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Ошибка скачивания или распаковки", Toast.LENGTH_LONG).show()
                             }
                         }
                     }) { Text("Обновить") }
@@ -1914,7 +2057,6 @@ fun OrderListScreen(
     onClearOrders: () -> Unit,
     imagesFolderUri: String?,
     isAutoScanning: Boolean,
-    onCacheClear: () -> Unit,
     listState: LazyListState,
     sharedPrefs: android.content.SharedPreferences,
     refreshAction: () -> Unit,
@@ -1949,16 +2091,25 @@ fun OrderListScreen(
         if (uri != null) {
             scope.launch(Dispatchers.IO) {
                 try {
+                    val fileName = getDocumentDisplayName(context, uri) ?: "Manual_Order.xlsx"
                     val inputStream = context.contentResolver.openInputStream(uri)
-                    val order = parseExcel(inputStream, "Manual_Order.xlsx")
-                    if (order != null) {
-                        if (imagesFolderUri != null) createOrderFolderSAF(context, imagesFolderUri, order.internalFolderName)
-                        withContext(Dispatchers.Main) {
-                            onFileLoaded(orders + order)
-                            Toast.makeText(context, "Загружен: ${order.factory}", Toast.LENGTH_SHORT).show()
+                    val order = parseExcel(inputStream, fileName)
+                    withContext(Dispatchers.Main) {
+                        when {
+                            order == null -> Toast.makeText(context, "Не удалось прочитать Excel-файл", Toast.LENGTH_SHORT).show()
+                            orders.any { it.id == order.id } -> Toast.makeText(context, "Этот заказ уже загружен", Toast.LENGTH_SHORT).show()
+                            else -> {
+                                if (imagesFolderUri != null) createOrderFolderSAF(context, imagesFolderUri, order.internalFolderName)
+                                onFileLoaded(orders + order)
+                                Toast.makeText(context, "Загружен: ${order.factory}", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
-                } catch (e: Exception) { e.printStackTrace() }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Ошибка загрузки Excel-файла", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
         }
     }
@@ -1985,11 +2136,9 @@ fun OrderListScreen(
         }
     }
 
-    val foundModels = remember(orders, searchQuery, searchType) {
+    val foundModels = remember(orders, searchQuery, searchType, selectedFactories) {
         if (searchQuery.isNotEmpty() && searchType == "По артикулу") {
-            val list = mutableListOf<Pair<Order, ModelInfo>>()
-            orders.forEach { o -> o.models.forEach { m -> if (m.article.contains(searchQuery, true)) list.add(o to m) } }
-            list
+            searchModelsByArticle(orders, searchQuery, selectedFactories)
         } else emptyList()
     }
 
@@ -2170,13 +2319,22 @@ fun OrderListScreen(
                 HoldToConfirmButton(
                     actionText = "Удалить",
                     onConfirm = {
-                        if (imagesFolderUri != null) {
-                            deleteOrderFolderSAF(context, imagesFolderUri, orderToDelete!!.internalFolderName)
-                            deleteExcelFileSAF(context, imagesFolderUri, orderToDelete!!.id)
+                        val target = orderToDelete ?: return@HoldToConfirmButton
+                        val folderUri = imagesFolderUri
+                        scope.launch {
+                            val deleted = withContext(Dispatchers.IO) {
+                                folderUri == null ||
+                                    (deleteExcelFileSAF(context, folderUri, target.id) &&
+                                        deleteOrderFolderSAF(context, folderUri, target.internalFolderName))
+                            }
+                            if (deleted) {
+                                onFileLoaded(orders.filter { it.id != target.id })
+                                orderToDelete = null
+                                Toast.makeText(context, "Заказ удален", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Не удалось полностью удалить файлы заказа", Toast.LENGTH_LONG).show()
+                            }
                         }
-                        onFileLoaded(orders.filter { it != orderToDelete })
-                        orderToDelete = null
-                        Toast.makeText(context, "Заказ удален", Toast.LENGTH_SHORT).show()
                     }
                 )
             },
@@ -2219,7 +2377,7 @@ fun OrderListScreen(
                     leadingIcon = { Icon(if (searchType == "По заказу") Icons.Default.Search else Icons.Default.ShoppingCart, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, keyboardType = KeyboardType.Text),
                     keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
-                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
                     shape = RoundedCornerShape(14.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Start),
                     placeholder = { Text(if (searchType == "По заказу") "Поиск по заказу..." else "Поиск по артикулу...", style = MaterialTheme.typography.bodyMedium) },
@@ -2386,27 +2544,61 @@ fun OrderListScreen(
 
 // ================= ФУНКЦИИ SAF =================
 
-fun createOrderFolderSAF(context: Context, folderUri: String, folderName: String) {
-    try {
-        val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
-        if (tree?.findFile(folderName) == null) tree?.createDirectory(folderName)
-    } catch (e: Exception) { e.printStackTrace() }
+fun hasPersistedFolderPermission(context: Context, folderUri: String): Boolean =
+    context.contentResolver.persistedUriPermissions.any { permission ->
+        permission.uri.toString() == folderUri && permission.isReadPermission && permission.isWritePermission
+    }
+
+fun createOrderFolderSAF(context: Context, folderUri: String, folderName: String): Boolean = try {
+    val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
+    val existing = tree?.findFile(folderName)
+    when {
+        existing != null -> existing.isDirectory
+        else -> tree?.createDirectory(folderName)?.isDirectory == true
+    }
+} catch (e: Exception) {
+    e.printStackTrace()
+    false
 }
 
-fun deleteOrderFolderSAF(context: Context, folderUri: String, folderName: String) {
-    try {
-        val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
-        val folder = tree?.findFile(folderName)
-        folder?.delete()
-    } catch (e: Exception) { e.printStackTrace() }
+fun deleteOrderFolderSAF(context: Context, folderUri: String, folderName: String): Boolean = try {
+    val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri)) ?: return false
+    tree.findFile(folderName)?.delete() ?: true
+} catch (e: Exception) {
+    e.printStackTrace()
+    false
 }
 
-fun deleteExcelFileSAF(context: Context, folderUri: String, fileName: String) {
-    try {
-        val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
-        val file = tree?.findFile(fileName)
-        file?.delete()
-    } catch (e: Exception) { e.printStackTrace() }
+fun deleteExcelFileSAF(context: Context, folderUri: String, fileName: String): Boolean = try {
+    val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri)) ?: return false
+    tree.findFile(fileName)?.delete() ?: true
+} catch (e: Exception) {
+    e.printStackTrace()
+    false
+}
+
+fun deleteDocument(context: Context, uri: Uri): Boolean = try {
+    DocumentFile.fromSingleUri(context, uri)?.delete() == true
+} catch (e: Exception) {
+    e.printStackTrace()
+    false
+}
+
+fun copyDocumentContent(context: Context, sourceUri: Uri, target: DocumentFile): Boolean = try {
+    val input = context.contentResolver.openInputStream(sourceUri)
+        ?: throw java.io.IOException("Не удалось открыть исходный файл")
+    val copied = input.use { source ->
+        val output = context.contentResolver.openOutputStream(target.uri, "wt")
+            ?: throw java.io.IOException("Не удалось открыть файл назначения")
+        output.use { destination -> source.copyTo(destination) }
+        true
+    }
+    if (!copied) target.delete()
+    copied
+} catch (e: Exception) {
+    e.printStackTrace()
+    target.delete()
+    false
 }
 
 // ================= ЭКРАН 2: СПИСОК МОДЕЛЕЙ =================
@@ -2443,6 +2635,7 @@ fun ModelListScreen(
 
     fun modelKey(article: String, field: String): String = ModelProgressStore.key(order.id, article, field)
 
+    var progressRevision by remember { mutableIntStateOf(0) }
     var tempSortOptions by remember { mutableStateOf(setOf<String>()) }
     var showSortMenu by remember { mutableStateOf(false) }
     var showCalendar by remember { mutableStateOf(false) }
@@ -2473,7 +2666,7 @@ fun ModelListScreen(
         selectedArticles = emptySet()
     }
 
-    val datesWithChecks = remember(order.models, order.id) {
+    val datesWithChecks = remember(order.models, order.id, progressRevision) {
         order.models.map { getDate(it.article) }.filter { it.isNotEmpty() }.toSet()
     }
 
@@ -2543,15 +2736,19 @@ fun ModelListScreen(
                         }
                     }
                 }
-                if (editor.commit()) {
-                    StatusHapticHelper.onStatusApplied(sharedPrefs, context)
-                    showBulkReworkDialog = false
-                    bulkSelectedReasons = emptySet()
-                    isSelectionMode = false
-                    selectedArticles = emptySet()
-                    Toast.makeText(context, "Статус ДОРАБОТКА установлен", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Не удалось сохранить статусы", Toast.LENGTH_SHORT).show()
+                scope.launch {
+                    val saved = withContext(Dispatchers.IO) { editor.commit() }
+                    if (saved) {
+                        progressRevision++
+                        StatusHapticHelper.onStatusApplied(sharedPrefs, context)
+                        showBulkReworkDialog = false
+                        bulkSelectedReasons = emptySet()
+                        isSelectionMode = false
+                        selectedArticles = emptySet()
+                        Toast.makeText(context, "Статус ДОРАБОТКА установлен", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Не удалось сохранить статусы", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }
@@ -2572,13 +2769,18 @@ fun ModelListScreen(
                         val newNote = if (oldNote.isEmpty()) bulkCommentText else "$oldNote\n$bulkCommentText"
                         editor.putString(noteKey, newNote)
                     }
-                    editor.commit()
-
-                    Toast.makeText(context, "Добавлено", Toast.LENGTH_SHORT).show()
-                    showCommentDialog = false
-                    bulkCommentText = ""
-                    isSelectionMode = false
-                    selectedArticles = emptySet()
+                    scope.launch {
+                        val saved = withContext(Dispatchers.IO) { editor.commit() }
+                        if (saved) {
+                            Toast.makeText(context, "Добавлено", Toast.LENGTH_SHORT).show()
+                            showCommentDialog = false
+                            bulkCommentText = ""
+                            isSelectionMode = false
+                            selectedArticles = emptySet()
+                        } else {
+                            Toast.makeText(context, "Не удалось сохранить комментарии", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }) { Text("Сохранить") }
             },
             dismissButton = { TextButton(onClick = { showCommentDialog = false }) { Text("Отмена") } }
@@ -2775,17 +2977,28 @@ fun ModelListScreen(
             icon = Icons.Default.Restore,
             onClick = {
                 showMainMenu = false
-                if (imagesFolderUri != null) {
+                val folderUri = imagesFolderUri
+                if (folderUri != null) {
                     scope.launch(Dispatchers.IO) {
                         try {
-                            val file = DocumentFile.fromTreeUri(context, Uri.parse(imagesFolderUri))?.findFile(order.id)
-                            if (file != null) {
-                                val parsed = parseExcel(context.contentResolver.openInputStream(file.uri), file.name ?: order.id)
-                                val currentArticles = order.models.map { it.article }.toSet()
-                                val deleted = parsed?.models?.filter { it.article !in currentArticles } ?: emptyList()
-                                withContext(Dispatchers.Main) { deletedModelsList = deleted }
+                            val file = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))?.findFile(order.id)
+                            val parsed = file?.let {
+                                parseExcel(context.contentResolver.openInputStream(it.uri), it.name ?: order.id)
                             }
-                        } catch (e: Exception) { }
+                            withContext(Dispatchers.Main) {
+                                if (parsed == null) {
+                                    Toast.makeText(context, "Не удалось прочитать исходный Excel-файл", Toast.LENGTH_LONG).show()
+                                } else {
+                                    val currentArticles = order.models.map { it.article }.toSet()
+                                    deletedModelsList = parsed.models.filter { it.article !in currentArticles }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Ошибка доступа к исходному Excel-файлу", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     }
                 }
             }
@@ -2802,7 +3015,7 @@ fun ModelListScreen(
         if (sortOption.isEmpty()) emptySet() else sortOption.split(", ").toSet()
     }
 
-    val filteredModels = remember(order.models, searchQuery, selectedDate, activeSortOptions) {
+    val filteredModels = remember(order.models, searchQuery, selectedDate, activeSortOptions, progressRevision) {
         order.models
             .filter { it.article.contains(searchQuery, ignoreCase = true) }
             .filter { if (selectedDate.isEmpty()) true else getDate(it.article) == selectedDate }
@@ -2943,7 +3156,7 @@ fun ModelListScreen(
                                     val m = order.models.find { it.article == article }
                                     m != null && shouldSuggestTest(m)
                                 }
-                                val doAction = {
+                                val doAction: () -> Unit = {
                                     val editor = sharedPrefs.edit()
                                     val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
                                     selectedArticles.forEach { article ->
@@ -2958,13 +3171,17 @@ fun ModelListScreen(
                                             }
                                         }
                                     }
-                                    if (editor.commit()) {
-                                        StatusHapticHelper.onStatusApplied(sharedPrefs, context)
-                                        isSelectionMode = false
-                                        selectedArticles = emptySet()
-                                        Toast.makeText(context, "Статус ПРИНЯТО установлен", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        Toast.makeText(context, "Не удалось сохранить статусы", Toast.LENGTH_SHORT).show()
+                                    scope.launch {
+                                        val saved = withContext(Dispatchers.IO) { editor.commit() }
+                                        if (saved) {
+                                            progressRevision++
+                                            StatusHapticHelper.onStatusApplied(sharedPrefs, context)
+                                            isSelectionMode = false
+                                            selectedArticles = emptySet()
+                                            Toast.makeText(context, "Статус ПРИНЯТО установлен", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(context, "Не удалось сохранить статусы", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
                                 }
 
@@ -3009,13 +3226,17 @@ fun ModelListScreen(
                                     editor.putString(modelKey(article, ModelProgressStore.DECISION), "НЕ ГОТОВО")
                                     editor.putString(modelKey(article, ModelProgressStore.DATE), date)
                                 }
-                                if (editor.commit()) {
-                                    StatusHapticHelper.onStatusApplied(sharedPrefs, context)
-                                    isSelectionMode = false
-                                    selectedArticles = emptySet()
-                                    Toast.makeText(context, "Статус НЕ ГОТОВО установлен", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    Toast.makeText(context, "Не удалось сохранить статусы", Toast.LENGTH_SHORT).show()
+                                scope.launch {
+                                    val saved = withContext(Dispatchers.IO) { editor.commit() }
+                                    if (saved) {
+                                        progressRevision++
+                                        StatusHapticHelper.onStatusApplied(sharedPrefs, context)
+                                        isSelectionMode = false
+                                        selectedArticles = emptySet()
+                                        Toast.makeText(context, "Статус НЕ ГОТОВО установлен", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Не удалось сохранить статусы", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                             }
                         )
@@ -3044,7 +3265,7 @@ fun ModelListScreen(
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, keyboardType = KeyboardType.Text),
                     keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).height(50.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).heightIn(min = 50.dp),
                     shape = RoundedCornerShape(14.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Start),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -3311,10 +3532,12 @@ fun InspectionScreen(
         if (success && sourceUri != null && imagesFolderUri != null) {
             scope.launch(Dispatchers.IO) {
                 val savedUri = copyToOrderFolder(context, sourceUri, imagesFolderUri, currentOrder.internalFolderName, model.article)
-                if (savedUri != null) {
-                    withContext(Dispatchers.Main) {
+                withContext(Dispatchers.Main) {
+                    if (savedUri != null) {
                         extraPhotos = extraPhotos + savedUri
                         Toast.makeText(context, "Фото с камеры добавлено", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Не удалось сохранить фото с камеры", Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -3335,10 +3558,12 @@ fun InspectionScreen(
         if (uri != null && imagesFolderUri != null) {
             scope.launch(Dispatchers.IO) {
                 val savedUri = copyToOrderFolder(context, uri, imagesFolderUri, currentOrder.internalFolderName, model.article)
-                if (savedUri != null) {
-                    withContext(Dispatchers.Main) {
+                withContext(Dispatchers.Main) {
+                    if (savedUri != null) {
                         extraPhotos = extraPhotos + savedUri
                         Toast.makeText(context, "Фото добавлено", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Не удалось сохранить фото", Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -3455,10 +3680,17 @@ fun InspectionScreen(
                 HoldToConfirmButton(
                     actionText = "Удалить",
                     onConfirm = {
-                        val target = extraPhotoToDelete!!
-                        DocumentFile.fromSingleUri(context, target)?.delete()
-                        extraPhotos = extraPhotos.filter { it != target }
-                        extraPhotoToDelete = null
+                        val target = extraPhotoToDelete ?: return@HoldToConfirmButton
+                        scope.launch {
+                            val deleted = withContext(Dispatchers.IO) { deleteDocument(context, target) }
+                            if (deleted) {
+                                extraPhotos = extraPhotos.filter { it != target }
+                                extraPhotoToDelete = null
+                                Toast.makeText(context, "Фото удалено", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Не удалось удалить фото", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     }
                 )
             },
@@ -3534,12 +3766,21 @@ fun InspectionScreen(
                 title = {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(model.article, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                model.article,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
                             Spacer(Modifier.width(8.dp))
                             Text(
                                 "${currentOrder.factory} ${currentOrder.format} ${currentOrder.deliveryNum}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3684,7 +3925,7 @@ fun InspectionScreen(
                         saveData()
                         Toast.makeText(context, "Тест получен", Toast.LENGTH_SHORT).show()
                     },
-                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32), contentColor = Color.White)
                 ) { Text("Тест получен", style = MaterialTheme.typography.labelLarge) }
@@ -3739,7 +3980,7 @@ fun InspectionScreen(
                         StatusHapticHelper.onStatusApplied(sharedPrefs, context)
                         if (shouldSuggestTest(model) && testDate.isEmpty()) showTestDialog = true
                     },
-                    modifier = Modifier.weight(1.1f).height(46.dp),
+                    modifier = Modifier.weight(1.1f).heightIn(min = 46.dp),
                     requireHold = touchProtectionMode == TouchProtectionMode.STRONG,
                     containerColor = if (decision == "ПРИНЯТО") Color(0xFF2E7D32) else Color(0xFF4CAF50),
                     contentColor = Color.White,
@@ -3758,7 +3999,7 @@ fun InspectionScreen(
                             showReworkDialog = true
                         }
                     },
-                    modifier = Modifier.weight(1.1f).height(46.dp),
+                    modifier = Modifier.weight(1.1f).heightIn(min = 46.dp),
                     requireHold = touchProtectionMode == TouchProtectionMode.STRONG,
                     containerColor = if (decision == "ДОРАБОТКА") Color(0xFFF9A825) else Color(0xFFFFEB3B),
                     contentColor = Color.Black,
@@ -3773,7 +4014,7 @@ fun InspectionScreen(
                         saveData()
                         StatusHapticHelper.onStatusApplied(sharedPrefs, context)
                     },
-                    modifier = Modifier.weight(0.8f).height(46.dp),
+                    modifier = Modifier.weight(0.8f).heightIn(min = 46.dp),
                     requireHold = touchProtectionMode == TouchProtectionMode.STRONG,
                     containerColor = if (decision == "НЕ ГОТОВО" || decision == "НЕ ПРИНЯТО") Color(0xFFC62828) else Color(0xFFF44336),
                     contentColor = Color.White,
@@ -3874,21 +4115,16 @@ fun loadExtraPhotos(context: Context, folderUri: String?, order: Order, article:
 }
 
 fun copyToOrderFolder(context: Context, sourceUri: Uri, folderUri: String, orderFolderName: String, article: String): Uri? {
-    try {
+    return try {
         val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
         val orderFolder = tree?.findFile(orderFolderName) ?: return null
         val fileName = "extra_${article.replace("/", "-").replace(" ", "-")}_${System.currentTimeMillis()}.jpg"
-        val newFile = orderFolder.createFile("image/jpeg", fileName)
-        if (newFile != null) {
-            val inputStream = context.contentResolver.openInputStream(sourceUri)
-            val outputStream = context.contentResolver.openOutputStream(newFile.uri)
-            if (inputStream != null && outputStream != null) {
-                inputStream.copyTo(outputStream); inputStream.close(); outputStream.close()
-                return newFile.uri
-            }
-        }
-    } catch (e: Exception) { e.printStackTrace() }
-    return null
+        val newFile = orderFolder.createFile("image/jpeg", fileName) ?: return null
+        if (copyDocumentContent(context, sourceUri, newFile)) newFile.uri else null
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
 }
 
 fun loadImagesFromFolderSAF(context: Context, folderUri: String?, order: Order): Map<String, List<Uri>> {
@@ -3922,42 +4158,43 @@ fun loadImagesFromFolderSAF(context: Context, folderUri: String?, order: Order):
 fun parseExcel(inputStream: InputStream?, fileName: String): Order? {
     if (inputStream == null) return null
     try {
-        val workbook = WorkbookFactory.create(inputStream)
-        val sheet = workbook.getSheetAt(0)
-        val formatter = org.apache.poi.ss.usermodel.DataFormatter()
-        var currentDate = "Дата не найдена"
-        val currentModels = mutableListOf<ModelInfo>()
+        inputStream.use { input ->
+            WorkbookFactory.create(input).use { workbook ->
+                val sheet = workbook.getSheetAt(0)
+                val formatter = org.apache.poi.ss.usermodel.DataFormatter()
+                var currentDate = "Дата не найдена"
+                val currentModels = mutableListOf<ModelInfo>()
 
-        val cleanName = fileName.substringBeforeLast(".")
-        val parts = cleanName.split("_")
-        val factory = if (parts.isNotEmpty()) parts[0] else "Unknown"
-        val deliveryNum = extractDeliveryNum(cleanName)
-        val formatFromName = extractFormat(cleanName)
+                val cleanName = fileName.substringBeforeLast(".")
+                val parts = cleanName.split("_")
+                val factory = if (parts.isNotEmpty()) parts[0] else "Unknown"
+                val deliveryNum = extractDeliveryNum(cleanName)
+                val formatFromName = extractFormat(cleanName)
+                val commentsColIdx = findCommentsColumnIndex(sheet).let { if (it >= 0) it else 19 }
 
-        val commentsColIdx = findCommentsColumnIndex(sheet).let { if (it >= 0) it else 19 }
-
-        for (row in sheet) {
-            val modelCell = row.getCell(2)
-            if (modelCell != null && !modelCell.toString().contains("Артикул") && !modelCell.toString().contains("款号")) {
-                val article = modelCell.toString().trim()
-                if (article.isNotEmpty()) {
-                    val brand = formatter.formatCellValue(row.getCell(5)).trim(); val color = formatter.formatCellValue(row.getCell(6)).trim()
-                    val upper = formatter.formatCellValue(row.getCell(7)).trim(); val lining = formatter.formatCellValue(row.getCell(8)).trim()
-                    val insole = formatter.formatCellValue(row.getCell(9)).trim(); val outsole = formatter.formatCellValue(row.getCell(10)).trim()
-                    val pairsPerBox = formatter.formatCellValue(row.getCell(11)).trim(); val sizeBoxes = formatter.formatCellValue(row.getCell(12)).trim()
-                    val mixedBoxes = formatter.formatCellValue(row.getCell(13)).trim(); val mixedCount = formatter.formatCellValue(row.getCell(14)).trim()
-                    var sizeBoxesCount = 0
-                    if (sizeBoxes.isNotEmpty()) { sizeBoxes.split(";").forEach { part -> part.substringAfter("-").trim().toIntOrNull()?.let { sizeBoxesCount += it } } }
-                    if (currentDate == "Дата не найдена") { val dateCell = row.getCell(15); if (dateCell != null) { val d = formatter.formatCellValue(dateCell); if (d.isNotEmpty() && !d.contains("Дата")) currentDate = d } }
-                    val comments = formatter.formatCellValue(row.getCell(commentsColIdx)).trim()
-                    currentModels.add(ModelInfo(article, brand, color, upper, lining, insole, outsole, pairsPerBox, sizeBoxes, sizeBoxesCount, mixedBoxes, mixedCount, comments))
+                for (row in sheet) {
+                    val modelCell = row.getCell(2)
+                    if (modelCell != null && !modelCell.toString().contains("Артикул") && !modelCell.toString().contains("款号")) {
+                        val article = modelCell.toString().trim()
+                        if (article.isNotEmpty()) {
+                            val brand = formatter.formatCellValue(row.getCell(5)).trim(); val color = formatter.formatCellValue(row.getCell(6)).trim()
+                            val upper = formatter.formatCellValue(row.getCell(7)).trim(); val lining = formatter.formatCellValue(row.getCell(8)).trim()
+                            val insole = formatter.formatCellValue(row.getCell(9)).trim(); val outsole = formatter.formatCellValue(row.getCell(10)).trim()
+                            val pairsPerBox = formatter.formatCellValue(row.getCell(11)).trim(); val sizeBoxes = formatter.formatCellValue(row.getCell(12)).trim()
+                            val mixedBoxes = formatter.formatCellValue(row.getCell(13)).trim(); val mixedCount = formatter.formatCellValue(row.getCell(14)).trim()
+                            var sizeBoxesCount = 0
+                            if (sizeBoxes.isNotEmpty()) { sizeBoxes.split(";").forEach { part -> part.substringAfter("-").trim().toIntOrNull()?.let { sizeBoxesCount += it } } }
+                            if (currentDate == "Дата не найдена") { val dateCell = row.getCell(15); if (dateCell != null) { val d = formatter.formatCellValue(dateCell); if (d.isNotEmpty() && !d.contains("Дата")) currentDate = d } }
+                            val comments = formatter.formatCellValue(row.getCell(commentsColIdx)).trim()
+                            currentModels.add(ModelInfo(article, brand, color, upper, lining, insole, outsole, pairsPerBox, sizeBoxes, sizeBoxesCount, mixedBoxes, mixedCount, comments))
+                        }
+                    }
+                }
+                if (currentModels.isNotEmpty()) {
+                    val internalName = "${factory}_${formatFromName}_${deliveryNum}_${currentDate.replace(".", "_")}"
+                    return Order(fileName, internalName, factory, formatFromName, deliveryNum, currentDate, currentModels)
                 }
             }
-        }
-        workbook.close(); inputStream.close()
-        if (currentModels.isNotEmpty()) {
-            val internalName = "${factory}_${formatFromName}_${deliveryNum}_${currentDate.replace(".", "_")}"
-            return Order(fileName, internalName, factory, formatFromName, deliveryNum, currentDate, currentModels)
         }
     } catch (e: Exception) { e.printStackTrace() }
     return null
@@ -3994,9 +4231,7 @@ fun CalendarDialog(
     val year = calendar.get(Calendar.YEAR)
     val month = calendar.get(Calendar.MONTH)
     val daysInMonth = calendar.getActualMaximum(Calendar.DAY_OF_MONTH)
-    val firstDayOfWeek = calendar.clone() as Calendar
-    firstDayOfWeek.set(Calendar.DAY_OF_MONTH, 1)
-    val startOffset = firstDayOfWeek.get(Calendar.DAY_OF_WEEK) - 1
+    val startOffset = mondayFirstDayOffset(year, month)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -4009,14 +4244,15 @@ fun CalendarDialog(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         for (dayOfWeek in 0..6) {
                             if ((week == 0 && dayOfWeek < startOffset) || currentDay > daysInMonth) {
-                                Spacer(modifier = Modifier.size(40.dp))
+                                Spacer(modifier = Modifier.weight(1f).height(48.dp))
                             } else {
                                 val dateStr = String.format("%02d.%02d.%d", currentDay, month + 1, year)
                                 val hasChecks = datesWithChecks.contains(dateStr)
                                 val isSelected = dateStr == selectedDate
                                 Box(
                                     modifier = Modifier
-                                        .size(40.dp)
+                                        .weight(1f)
+                                        .height(48.dp)
                                         .background(if (isSelected) MaterialTheme.colorScheme.primary else if (hasChecks) acceptedBg() else Color.Transparent, RoundedCornerShape(8.dp))
                                         .safeClickable { onDateSelected(dateStr) },
                                     contentAlignment = Alignment.Center
