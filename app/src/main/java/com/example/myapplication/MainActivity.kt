@@ -337,7 +337,8 @@ fun getOrderStats(order: Order, sharedPrefs: android.content.SharedPreferences):
     var rejected = 0
     var rework = 0
     order.models.forEach { model ->
-        when (sharedPrefs.getString("${model.article}_decision", "")) {
+        val key = ModelProgressStore.key(order.id, model.article, ModelProgressStore.DECISION)
+        when (sharedPrefs.getString(key, "")) {
             "ПРИНЯТО" -> accepted++
             "НЕ ПРИНЯТО", "НЕ ГОТОВО" -> rejected++
             "ДОРАБОТКА" -> rework++
@@ -496,7 +497,11 @@ fun MainScreen(
     val gson = remember { Gson() }
     val scope = rememberCoroutineScope()
 
-    var orders by remember { mutableStateOf<List<Order>>(loadSavedOrders(sharedPrefs)) }
+    var orders by remember {
+        val savedOrders = loadSavedOrders(sharedPrefs)
+        ModelProgressStore.migrateLegacyData(sharedPrefs, savedOrders)
+        mutableStateOf(savedOrders)
+    }
     var imagesFolderUri by remember { mutableStateOf(sharedPrefs.getString("images_folder_uri", null)) }
     var selectedTab by remember { mutableStateOf(0) }
 
@@ -533,6 +538,7 @@ fun MainScreen(
     }
 
     fun saveOrders(newOrders: List<Order>) {
+        ModelProgressStore.migrateLegacyData(sharedPrefs, newOrders)
         orders = newOrders
         scope.launch(Dispatchers.IO) {
             try {
@@ -695,10 +701,18 @@ fun MainScreen(
                         )
                         selectedModel == null -> ModelListScreen(
                             selectedOrder!!,
-                            { article -> sharedPrefs.getString("${article}_decision", "") ?: "" },
-                            { article -> sharedPrefs.getString("${article}_date", "") ?: "" },
-                            { article -> sharedPrefs.getString("${article}_testDate", "") ?: "" },
-                            { article -> sharedPrefs.getString("${article}_testReceivedDate", "") ?: "" },
+                            { article ->
+                                sharedPrefs.getString(ModelProgressStore.key(selectedOrder!!.id, article, ModelProgressStore.DECISION), "") ?: ""
+                            },
+                            { article ->
+                                sharedPrefs.getString(ModelProgressStore.key(selectedOrder!!.id, article, ModelProgressStore.DATE), "") ?: ""
+                            },
+                            { article ->
+                                sharedPrefs.getString(ModelProgressStore.key(selectedOrder!!.id, article, ModelProgressStore.TEST_DATE), "") ?: ""
+                            },
+                            { article ->
+                                sharedPrefs.getString(ModelProgressStore.key(selectedOrder!!.id, article, ModelProgressStore.TEST_RECEIVED_DATE), "") ?: ""
+                            },
                             onBack = {
                                 selectedOrderId = null
                                 modelSortOption = ""
@@ -1391,8 +1405,10 @@ fun CalendarScreen(
         val map = mutableMapOf<String, MutableList<Pair<Order, ModelInfo>>>()
         orders.forEach { order ->
             order.models.forEach { model ->
-                val decision = sharedPrefs.getString("${model.article}_decision", "") ?: ""
-                val date = sharedPrefs.getString("${model.article}_date", "") ?: ""
+                val decisionKey = ModelProgressStore.key(order.id, model.article, ModelProgressStore.DECISION)
+                val dateKey = ModelProgressStore.key(order.id, model.article, ModelProgressStore.DATE)
+                val decision = sharedPrefs.getString(decisionKey, "") ?: ""
+                val date = sharedPrefs.getString(dateKey, "") ?: ""
                 if (decision.isNotEmpty() && date.isNotEmpty()) {
                     if (!map.containsKey(date)) map[date] = mutableListOf()
                     map[date]!!.add(order to model)
@@ -1537,10 +1553,10 @@ fun CalendarScreen(
                             Spacer(Modifier.height(8.dp))
 
                             models.forEach { (_, model) ->
-                                val decision = sharedPrefs.getString("${model.article}_decision", "") ?: ""
-                                val note = sharedPrefs.getString("${model.article}_note", "") ?: ""
-                                val testDate = sharedPrefs.getString("${model.article}_testDate", "") ?: ""
-                                val testReceived = sharedPrefs.getString("${model.article}_testReceivedDate", "") ?: ""
+                                val decision = sharedPrefs.getString(ModelProgressStore.key(order.id, model.article, ModelProgressStore.DECISION), "") ?: ""
+                                val note = sharedPrefs.getString(ModelProgressStore.key(order.id, model.article, ModelProgressStore.NOTE), "") ?: ""
+                                val testDate = sharedPrefs.getString(ModelProgressStore.key(order.id, model.article, ModelProgressStore.TEST_DATE), "") ?: ""
+                                val testReceived = sharedPrefs.getString(ModelProgressStore.key(order.id, model.article, ModelProgressStore.TEST_RECEIVED_DATE), "") ?: ""
 
                                 val cardColor = when (decision) {
                                     "ПРИНЯТО" -> acceptedBg()
@@ -2425,6 +2441,8 @@ fun ModelListScreen(
     val haptic = LocalHapticFeedback.current
     val touchProtectionMode = getTouchProtectionMode(sharedPrefs)
 
+    fun modelKey(article: String, field: String): String = ModelProgressStore.key(order.id, article, field)
+
     var tempSortOptions by remember { mutableStateOf(setOf<String>()) }
     var showSortMenu by remember { mutableStateOf(false) }
     var showCalendar by remember { mutableStateOf(false) }
@@ -2511,15 +2529,17 @@ fun ModelListScreen(
                 val editor = sharedPrefs.edit()
                 val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
                 articles.forEach { article ->
-                    editor.putString("${article}_decision", "ДОРАБОТКА")
-                    editor.putString("${article}_date", date)
-                    val oldNote = sharedPrefs.getString("${article}_note", "") ?: ""
-                    editor.putString("${article}_note", appendReworkReasons(oldNote, reasons))
+                    editor.putString(modelKey(article, ModelProgressStore.DECISION), "ДОРАБОТКА")
+                    editor.putString(modelKey(article, ModelProgressStore.DATE), date)
+                    val noteKey = modelKey(article, ModelProgressStore.NOTE)
+                    val oldNote = sharedPrefs.getString(noteKey, "") ?: ""
+                    editor.putString(noteKey, appendReworkReasons(oldNote, reasons))
                     val selectedModel = order.models.find { it.article == article }
                     if (selectedModel != null && shouldSuggestTest(selectedModel)) {
-                        val existingTestDate = sharedPrefs.getString("${article}_testDate", "") ?: ""
+                        val testDateKey = modelKey(article, ModelProgressStore.TEST_DATE)
+                        val existingTestDate = sharedPrefs.getString(testDateKey, "") ?: ""
                         if (existingTestDate.isEmpty()) {
-                            editor.putString("${article}_testDate", date)
+                            editor.putString(testDateKey, date)
                         }
                     }
                 }
@@ -2547,9 +2567,10 @@ fun ModelListScreen(
                 TextButton(onClick = {
                     val editor = sharedPrefs.edit()
                     selectedArticles.forEach { article ->
-                        val oldNote = sharedPrefs.getString("${article}_note", "") ?: ""
+                        val noteKey = modelKey(article, ModelProgressStore.NOTE)
+                        val oldNote = sharedPrefs.getString(noteKey, "") ?: ""
                         val newNote = if (oldNote.isEmpty()) bulkCommentText else "$oldNote\n$bulkCommentText"
-                        editor.putString("${article}_note", newNote)
+                        editor.putString(noteKey, newNote)
                     }
                     editor.commit()
 
@@ -2926,13 +2947,14 @@ fun ModelListScreen(
                                     val editor = sharedPrefs.edit()
                                     val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
                                     selectedArticles.forEach { article ->
-                                        editor.putString("${article}_decision", "ПРИНЯТО")
-                                        editor.putString("${article}_date", date)
+                                        editor.putString(modelKey(article, ModelProgressStore.DECISION), "ПРИНЯТО")
+                                        editor.putString(modelKey(article, ModelProgressStore.DATE), date)
                                         val m = order.models.find { it.article == article }
                                         if (m != null && shouldSuggestTest(m)) {
-                                            val existingTestDate = sharedPrefs.getString("${article}_testDate", "") ?: ""
+                                            val testDateKey = modelKey(article, ModelProgressStore.TEST_DATE)
+                                            val existingTestDate = sharedPrefs.getString(testDateKey, "") ?: ""
                                             if (existingTestDate.isEmpty()) {
-                                                editor.putString("${article}_testDate", date)
+                                                editor.putString(testDateKey, date)
                                             }
                                         }
                                     }
@@ -2984,8 +3006,8 @@ fun ModelListScreen(
                                 val editor = sharedPrefs.edit()
                                 val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
                                 selectedArticles.forEach { article ->
-                                    editor.putString("${article}_decision", "НЕ ГОТОВО")
-                                    editor.putString("${article}_date", date)
+                                    editor.putString(modelKey(article, ModelProgressStore.DECISION), "НЕ ГОТОВО")
+                                    editor.putString(modelKey(article, ModelProgressStore.DATE), date)
                                 }
                                 if (editor.commit()) {
                                     StatusHapticHelper.onStatusApplied(sharedPrefs, context)
@@ -3068,7 +3090,7 @@ fun ModelListScreen(
             ) {
                 items(filteredModels, key = { it.article }) { model ->
                     val status = getStatus(model.article)
-                    val note = sharedPrefs.getString("${model.article}_note", "") ?: ""
+                    val note = sharedPrefs.getString(modelKey(model.article, ModelProgressStore.NOTE), "") ?: ""
                     val statusDate = getDate(model.article)
                     val testSent = getTestDate(model.article)
                     val testReceived = getTestReceivedDate(model.article)
@@ -3233,29 +3255,31 @@ fun InspectionScreen(
         }
     }
 
-    var upperChecked by remember { mutableStateOf(sharedPrefs.getBoolean("${model.article}_upper", false)) }
-    var liningChecked by remember { mutableStateOf(sharedPrefs.getBoolean("${model.article}_lining", false)) }
-    var insoleChecked by remember { mutableStateOf(sharedPrefs.getBoolean("${model.article}_insole", false)) }
-    var outsoleChecked by remember { mutableStateOf(sharedPrefs.getBoolean("${model.article}_outsole", false)) }
-    var decision by remember { mutableStateOf(sharedPrefs.getString("${model.article}_decision", "") ?: "") }
-    var noteText by remember { mutableStateOf(sharedPrefs.getString("${model.article}_note", "") ?: "") }
-    var testDate by remember { mutableStateOf(sharedPrefs.getString("${model.article}_testDate", "") ?: "") }
-    var testReceivedDate by remember { mutableStateOf(sharedPrefs.getString("${model.article}_testReceivedDate", "") ?: "") }
+    fun modelKey(field: String): String = ModelProgressStore.key(currentOrder.id, model.article, field)
+
+    var upperChecked by remember { mutableStateOf(sharedPrefs.getBoolean(modelKey(ModelProgressStore.UPPER), false)) }
+    var liningChecked by remember { mutableStateOf(sharedPrefs.getBoolean(modelKey(ModelProgressStore.LINING), false)) }
+    var insoleChecked by remember { mutableStateOf(sharedPrefs.getBoolean(modelKey(ModelProgressStore.INSOLE), false)) }
+    var outsoleChecked by remember { mutableStateOf(sharedPrefs.getBoolean(modelKey(ModelProgressStore.OUTSOLE), false)) }
+    var decision by remember { mutableStateOf(sharedPrefs.getString(modelKey(ModelProgressStore.DECISION), "") ?: "") }
+    var noteText by remember { mutableStateOf(sharedPrefs.getString(modelKey(ModelProgressStore.NOTE), "") ?: "") }
+    var testDate by remember { mutableStateOf(sharedPrefs.getString(modelKey(ModelProgressStore.TEST_DATE), "") ?: "") }
+    var testReceivedDate by remember { mutableStateOf(sharedPrefs.getString(modelKey(ModelProgressStore.TEST_RECEIVED_DATE), "") ?: "") }
 
     fun saveData(noteOverride: String? = null) {
         val finalNote = noteOverride ?: noteText
         sharedPrefs.edit().apply {
-            putBoolean("${model.article}_upper", upperChecked)
-            putBoolean("${model.article}_lining", liningChecked)
-            putBoolean("${model.article}_insole", insoleChecked)
-            putBoolean("${model.article}_outsole", outsoleChecked)
-            putString("${model.article}_decision", decision)
-            putString("${model.article}_note", finalNote)
-            putString("${model.article}_testDate", testDate)
-            putString("${model.article}_testReceivedDate", testReceivedDate)
+            putBoolean(modelKey(ModelProgressStore.UPPER), upperChecked)
+            putBoolean(modelKey(ModelProgressStore.LINING), liningChecked)
+            putBoolean(modelKey(ModelProgressStore.INSOLE), insoleChecked)
+            putBoolean(modelKey(ModelProgressStore.OUTSOLE), outsoleChecked)
+            putString(modelKey(ModelProgressStore.DECISION), decision)
+            putString(modelKey(ModelProgressStore.NOTE), finalNote)
+            putString(modelKey(ModelProgressStore.TEST_DATE), testDate)
+            putString(modelKey(ModelProgressStore.TEST_RECEIVED_DATE), testReceivedDate)
             if (decision.isNotEmpty()) {
                 val date = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
-                putString("${model.article}_date", date)
+                putString(modelKey(ModelProgressStore.DATE), date)
             }
             apply()
         }
@@ -3263,13 +3287,13 @@ fun InspectionScreen(
 
     fun resetData(deleteComment: Boolean) {
         sharedPrefs.edit().apply {
-            remove("${model.article}_upper"); remove("${model.article}_lining")
-            remove("${model.article}_insole"); remove("${model.article}_outsole")
-            remove("${model.article}_decision")
-            remove("${model.article}_date"); remove("${model.article}_testDate")
-            remove("${model.article}_testReceivedDate")
+            remove(modelKey(ModelProgressStore.UPPER)); remove(modelKey(ModelProgressStore.LINING))
+            remove(modelKey(ModelProgressStore.INSOLE)); remove(modelKey(ModelProgressStore.OUTSOLE))
+            remove(modelKey(ModelProgressStore.DECISION))
+            remove(modelKey(ModelProgressStore.DATE)); remove(modelKey(ModelProgressStore.TEST_DATE))
+            remove(modelKey(ModelProgressStore.TEST_RECEIVED_DATE))
             if (deleteComment) {
-                remove("${model.article}_note")
+                remove(modelKey(ModelProgressStore.NOTE))
             }
             apply()
         }
