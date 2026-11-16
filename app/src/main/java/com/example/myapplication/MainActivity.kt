@@ -408,30 +408,41 @@ fun normalizeArticle(article: String): String =
         .replace(Regex("-+"), "-")
         .lowercase()
 
-fun macroFileBaseName(fileName: String): String? {
+private fun fullMacroFileBaseName(fileName: String): String? {
     if (fileName.isEmpty()) return null
     val noExt = fileName.substringBeforeLast(".")
     if (noExt.startsWith("extra_", true)) return null
-    var base = noExt.trim().lowercase()
-    val parts = base.split("_")
-    if (parts.size > 1 && parts.last().all { it.isDigit() }) {
-        base = parts.dropLast(1).joinToString("_")
-    }
-    return base
+    return noExt.trim().lowercase()
         .replace("/", "-")
         .replace(" ", "-")
         .replace(Regex("-+"), "-")
+}
+
+fun macroFileBaseName(fileName: String): String? {
+    val fullBase = fullMacroFileBaseName(fileName) ?: return null
+    val parts = fullBase.split("_")
+    return if (parts.size > 1 && parts.last().all { it.isDigit() }) {
+        parts.dropLast(1).joinToString("_")
+    } else {
+        fullBase
+    }
+}
+
+internal fun macroFileBaseNameForArticles(fileName: String, normalizedArticles: Set<String>): String? {
+    val fullBase = fullMacroFileBaseName(fileName) ?: return null
+    return if (fullBase in normalizedArticles) fullBase else macroFileBaseName(fileName)
 }
 
 fun countModelsWithoutMacros(context: Context, folderUri: String, order: Order): Int {
     return try {
         val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
         val orderFolder = tree?.findFile(order.internalFolderName) ?: return order.models.size
+        val normalizedArticles = order.models.mapTo(mutableSetOf()) { normalizeArticle(it.article) }
         val macroNames = mutableSetOf<String>()
         orderFolder.listFiles().forEach { file ->
             val name = file.name ?: return@forEach
             if (name.endsWith(".jpg", true) || name.endsWith(".png", true) || name.endsWith(".jpeg", true)) {
-                macroFileBaseName(name)?.let { macroNames.add(it) }
+                macroFileBaseNameForArticles(name, normalizedArticles)?.let { macroNames.add(it) }
             }
         }
         order.models.count { normalizeArticle(it.article) !in macroNames }
@@ -1144,23 +1155,29 @@ fun GalleryDetailScreen(
             modelToManualAttach = null
             scope.launch(Dispatchers.IO) {
                 val articleName = targetModel.article.replace("/", "-").replace(" ", "-")
+                val normalizedArticle = normalizeArticle(articleName)
                 val orderFolder = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
                     ?.findFile(order.internalFolderName)
                 val newFile = orderFolder?.createFile("image/jpeg", "$articleName.jpg")
                 val copied = newFile != null && copyDocumentContent(context, uri, newFile)
-                if (copied) {
+                val linked = copied && newFile?.name?.let {
+                    macroFileBaseNameForArticles(it, setOf(normalizedArticle))
+                } == normalizedArticle
+                if (linked) {
                     orderFolder?.listFiles()?.forEach { file ->
-                        val base = file.name?.let(::macroFileBaseName)
-                        if (file.uri != newFile?.uri && base == normalizeArticle(articleName)) file.delete()
+                        val base = file.name?.let { macroFileBaseNameForArticles(it, setOf(normalizedArticle)) }
+                        if (file.uri != newFile?.uri && base == normalizedArticle) file.delete()
                     }
+                } else if (copied) {
+                    newFile?.delete()
                 }
                 withContext(Dispatchers.Main) {
                     Toast.makeText(
                         context,
-                        if (copied) "Фото привязано" else "Не удалось сохранить фото",
+                        if (linked) "Фото привязано" else "Не удалось сохранить фото",
                         Toast.LENGTH_SHORT
                     ).show()
-                    if (copied) isLoading = true
+                    if (linked) isLoading = true
                 }
             }
         }
@@ -1174,12 +1191,16 @@ fun GalleryDetailScreen(
                 val orderFolder = DocumentFile.fromTreeUri(context, Uri.parse(uri))
                     ?.findFile(order.internalFolderName)
                 val articleName = targetModel.article.replace("/", "-").replace(" ", "-")
+                val normalizedArticle = normalizeArticle(articleName)
                 val newFile = orderFolder?.createFile("image/jpeg", "$articleName.jpg")
                 val copied = newFile != null && copyDocumentContent(context, srcUri, newFile)
-                if (copied) {
+                val linked = copied && newFile?.name?.let {
+                    macroFileBaseNameForArticles(it, setOf(normalizedArticle))
+                } == normalizedArticle
+                if (linked) {
                     orderFolder?.listFiles()?.forEach { file ->
-                        val base = file.name?.let(::macroFileBaseName)
-                        if (file.uri != newFile?.uri && file.uri != srcUri && base == normalizeArticle(articleName)) {
+                        val base = file.name?.let { macroFileBaseNameForArticles(it, setOf(normalizedArticle)) }
+                        if (file.uri != newFile?.uri && file.uri != srcUri && base == normalizedArticle) {
                             file.delete()
                         }
                     }
@@ -1194,6 +1215,7 @@ fun GalleryDetailScreen(
                         isLoading = true
                     }
                 } else {
+                    if (copied) newFile?.delete()
                     withContext(Dispatchers.Main) {
                         Toast.makeText(context, "Ошибка привязки", Toast.LENGTH_SHORT).show()
                     }
@@ -1495,6 +1517,7 @@ internal fun getModelsWithoutImages(order: Order, macroNames: Set<String>): List
 fun loadAllImagesFromFolder(context: Context, folderUri: String?, order: Order): List<FolderImage> {
     val result = mutableListOf<FolderImage>()
     if (folderUri == null) return result
+    val normalizedArticles = order.models.mapTo(mutableSetOf()) { normalizeArticle(it.article) }
     try {
         val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
         val orderFolder = tree?.findFile(order.internalFolderName)
@@ -1503,7 +1526,7 @@ fun loadAllImagesFromFolder(context: Context, folderUri: String?, order: Order):
                 val name = file.name
                 if (file.isFile && name != null &&
                     (name.endsWith(".jpg", true) || name.endsWith(".png", true) || name.endsWith(".jpeg", true))) {
-                    result.add(FolderImage(file.uri, name, macroFileBaseName(name)))
+                    result.add(FolderImage(file.uri, name, macroFileBaseNameForArticles(name, normalizedArticles)))
                 }
             }
         }
@@ -3198,7 +3221,7 @@ fun ModelListScreen(
                         ActionIconButton(
                             icon = Icons.Default.Warning,
                             label = "Доработка",
-                            tint = Color(0xFFF9A825),
+                            tint = reworkAccent(),
                             requireHold = touchProtectionMode == TouchProtectionMode.STRONG,
                             onClick = {
                                 val needsTest = selectedArticles.any { article ->
@@ -4003,7 +4026,7 @@ fun InspectionScreen(
                     },
                     modifier = Modifier.weight(1.1f).heightIn(min = 46.dp),
                     requireHold = touchProtectionMode == TouchProtectionMode.STRONG,
-                    containerColor = if (decision == "ДОРАБОТКА") Color(0xFFF9A825) else Color(0xFFFFEB3B),
+                    containerColor = reworkAccent(),
                     contentColor = Color.Black,
                     contentPadding = PaddingValues(0.dp),
                     textStyle = MaterialTheme.typography.labelSmall
@@ -4143,7 +4166,7 @@ fun loadImagesFromFolderSAF(context: Context, folderUri: String?, order: Order):
             orderFolder.listFiles().forEach { file ->
                 if (file.isFile && file.name?.startsWith("extra_") == false &&
                     (file.name?.endsWith(".jpg", true) == true || file.name?.endsWith(".png", true) == true || file.name?.endsWith(".jpeg", true) == true)) {
-                    val base = macroFileBaseName(file.name ?: "") ?: return@forEach
+                    val base = macroFileBaseNameForArticles(file.name ?: "", articlesByBase.keys) ?: return@forEach
                     val matchingArticle = articlesByBase[base]
                     if (matchingArticle != null) {
                         val cacheKey = "${order.internalFolderName}_${matchingArticle}"

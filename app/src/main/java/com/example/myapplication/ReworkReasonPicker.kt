@@ -106,7 +106,7 @@ fun ReworkReasonPicker(
                         Icon(
                             Icons.Default.Warning,
                             contentDescription = null,
-                            tint = Color(0xFFF57C00),
+                            tint = reworkAccent(),
                             modifier = Modifier.size(22.dp)
                         )
                     }

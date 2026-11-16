@@ -122,6 +122,15 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun numericArticleSuffixIsPreservedWhenItMatchesModel() {
+        val articles = setOf("xid263_8")
+
+        assertEquals("xid263_8", macroFileBaseNameForArticles("Xid263_8.jpg", articles))
+        assertEquals("xid263_8-(1)", macroFileBaseNameForArticles("Xid263_8 (1).jpg", articles))
+        assertEquals("model-1", macroFileBaseNameForArticles("MODEL 1_2.jpg", setOf("model-1")))
+    }
+
+    @Test
     fun updateSelectionDistinguishesNewAndCurrentVersions() {
         val xml = """
             <ListBucketResult>
