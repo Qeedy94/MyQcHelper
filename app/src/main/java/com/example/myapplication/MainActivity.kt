@@ -1825,27 +1825,28 @@ fun SettingsTab(
                     Text("Тема оформления", style = MaterialTheme.typography.titleSmall)
                     Text(themeLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box {
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    DropdownMenu(
+                        expanded = showThemeMenu,
+                        onDismissRequest = { showThemeMenu = false },
+                        modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Системная", style = MaterialTheme.typography.bodyMedium) },
+                            onClick = { onThemeModeChange("system"); showThemeMenu = false }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Светлая", style = MaterialTheme.typography.bodyMedium) },
+                            onClick = { onThemeModeChange("light"); showThemeMenu = false }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Темная", style = MaterialTheme.typography.bodyMedium) },
+                            onClick = { onThemeModeChange("dark"); showThemeMenu = false }
+                        )
+                    }
+                }
             }
-        }
-
-        DropdownMenu(
-            expanded = showThemeMenu,
-            onDismissRequest = { showThemeMenu = false },
-            modifier = Modifier.background(MaterialTheme.colorScheme.surface)
-        ) {
-            DropdownMenuItem(
-                text = { Text("Системная", style = MaterialTheme.typography.bodyMedium) },
-                onClick = { onThemeModeChange("system"); showThemeMenu = false }
-            )
-            DropdownMenuItem(
-                text = { Text("Светлая", style = MaterialTheme.typography.bodyMedium) },
-                onClick = { onThemeModeChange("light"); showThemeMenu = false }
-            )
-            DropdownMenuItem(
-                text = { Text("Темная", style = MaterialTheme.typography.bodyMedium) },
-                onClick = { onThemeModeChange("dark"); showThemeMenu = false }
-            )
         }
 
         Spacer(Modifier.height(12.dp))
@@ -1872,24 +1873,25 @@ fun SettingsTab(
                     Text("Защита от случайных касаний", style = MaterialTheme.typography.titleSmall)
                     Text(touchProtectionMode.label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-
-        DropdownMenu(
-            expanded = showTouchProtectionMenu,
-            onDismissRequest = { showTouchProtectionMenu = false },
-            modifier = Modifier.background(MaterialTheme.colorScheme.surface)
-        ) {
-            TouchProtectionMode.entries.forEach { mode ->
-                DropdownMenuItem(
-                    text = { Text(mode.label, style = MaterialTheme.typography.bodyMedium) },
-                    onClick = {
-                        touchProtectionMode = mode
-                        sharedPrefs.edit().putString(TOUCH_PROTECTION_MODE_KEY, mode.preferenceValue).apply()
-                        showTouchProtectionMenu = false
+                Box {
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    DropdownMenu(
+                        expanded = showTouchProtectionMenu,
+                        onDismissRequest = { showTouchProtectionMenu = false },
+                        modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+                    ) {
+                        TouchProtectionMode.entries.forEach { mode ->
+                            DropdownMenuItem(
+                                text = { Text(mode.label, style = MaterialTheme.typography.bodyMedium) },
+                                onClick = {
+                                    touchProtectionMode = mode
+                                    sharedPrefs.edit().putString(TOUCH_PROTECTION_MODE_KEY, mode.preferenceValue).apply()
+                                    showTouchProtectionMenu = false
+                                }
+                            )
+                        }
                     }
-                )
+                }
             }
         }
 
@@ -2242,7 +2244,8 @@ fun OrderListScreen(
                         .safeClickable {
                             tempSelectedFactories = if (isSelected) tempSelectedFactories - factory else tempSelectedFactories + factory
                         }
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                        .height(45.dp)
+                        .padding(horizontal = 20.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     TelegramCheckbox(
@@ -2469,10 +2472,8 @@ fun OrderListScreen(
                                 modifier = Modifier.padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                OrderStatsRing(
+                                OrderStatsSummary(
                                     accepted = accepted,
-                                    rejected = rejected,
-                                    rework = rework,
                                     total = order.models.size
                                 )
                                 Spacer(Modifier.width(10.dp))
@@ -2890,7 +2891,8 @@ fun ModelListScreen(
                         .safeClickable {
                             tempSortOptions = if (isSelected) tempSortOptions - option else tempSortOptions + option
                         }
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                        .height(45.dp)
+                        .padding(horizontal = 20.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     TelegramCheckbox(
