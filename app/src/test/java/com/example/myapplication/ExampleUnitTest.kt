@@ -131,6 +131,21 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun galleryFilterKeepsOrdersWithPendingCounts() {
+        val linked = testOrder("linked.xlsx")
+        val pending = testOrder("pending.xlsx")
+        val orders = listOf(linked, pending)
+        val counts = mapOf(linked.id to 0)
+
+        assertEquals(listOf(pending), galleryOrdersToDisplay(orders, false, counts))
+        assertEquals(orders, galleryOrdersToDisplay(orders, true, counts))
+        assertEquals(
+            emptyList<Order>(),
+            galleryOrdersToDisplay(orders, false, counts + (pending.id to 0))
+        )
+    }
+
+    @Test
     fun updateSelectionDistinguishesNewAndCurrentVersions() {
         val xml = """
             <ListBucketResult>

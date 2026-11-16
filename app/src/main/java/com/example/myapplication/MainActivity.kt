@@ -85,6 +85,11 @@ import coil3.memory.MemoryCache
 import coil3.request.ImageRequest
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -433,10 +438,9 @@ internal fun macroFileBaseNameForArticles(fileName: String, normalizedArticles: 
     return if (fullBase in normalizedArticles) fullBase else macroFileBaseName(fileName)
 }
 
-fun countModelsWithoutMacros(context: Context, folderUri: String, order: Order): Int {
+private fun countModelsWithoutMacros(orderFolder: DocumentFile?, order: Order): Int {
+    if (orderFolder == null) return order.models.size
     return try {
-        val tree = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
-        val orderFolder = tree?.findFile(order.internalFolderName) ?: return order.models.size
         val normalizedArticles = order.models.mapTo(mutableSetOf()) { normalizeArticle(it.article) }
         val macroNames = mutableSetOf<String>()
         orderFolder.listFiles().forEach { file ->
@@ -446,7 +450,9 @@ fun countModelsWithoutMacros(context: Context, folderUri: String, order: Order):
             }
         }
         order.models.count { normalizeArticle(it.article) !in macroNames }
-    } catch (e: Exception) { order.models.size }
+    } catch (e: Exception) {
+        order.models.size
+    }
 }
 
 fun extractDeliveryNum(cleanName: String): String {
@@ -959,26 +965,41 @@ fun GalleryTab(
     var showMenu by remember { mutableStateOf(false) }
 
     val unlinkedCounts = remember { mutableStateMapOf<String, Int>() }
-    var isInitialLoading by remember { mutableStateOf(true) }
-    var refreshTrigger by remember { mutableStateOf(0) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    val refreshJob = remember { mutableStateOf<Job?>(null) }
 
     fun refreshCounts() {
+        refreshJob.value?.cancel()
         val uri = imagesFolderUri ?: run {
-            isInitialLoading = false
+            unlinkedCounts.clear()
+            isRefreshing = false
             return
         }
-        scope.launch(Dispatchers.IO) {
-            val result = mutableMapOf<String, Int>()
-            orders.forEach { order ->
-                val count = countModelsWithoutMacros(context, uri, order)
-                result[order.id] = count
+        unlinkedCounts.clear()
+        isRefreshing = true
+        refreshJob.value = scope.launch(Dispatchers.IO) {
+            val orderFolders = try {
+                DocumentFile.fromTreeUri(context, Uri.parse(uri))
+                    ?.listFiles()
+                    ?.associateBy { it.name }
+                    .orEmpty()
+            } catch (e: Exception) {
+                emptyMap()
             }
-            withContext(Dispatchers.Main) {
-                unlinkedCounts.clear()
-                unlinkedCounts.putAll(result)
-                isInitialLoading = false
-                refreshTrigger++
+            coroutineScope {
+                orders.chunked(3).forEach { batch ->
+                    val results = batch.map { order ->
+                        async {
+                            ensureActive()
+                            order to countModelsWithoutMacros(orderFolders[order.internalFolderName], order)
+                        }
+                    }.awaitAll()
+                    withContext(Dispatchers.Main) {
+                        results.forEach { (order, count) -> unlinkedCounts[order.id] = count }
+                    }
+                }
             }
+            withContext(Dispatchers.Main) { isRefreshing = false }
         }
     }
 
@@ -986,16 +1007,28 @@ fun GalleryTab(
         refreshCounts()
     }
 
-    BackHandler(enabled = selectedOrderForGallery != null) { selectedOrderForGallery = null }
+    fun openGalleryDetail(order: Order) {
+        refreshJob.value?.cancel()
+        isRefreshing = false
+        selectedOrderForGallery = order
+    }
+
+    fun closeGalleryDetail(unlinked: Int?, contentChanged: Boolean) {
+        val order = selectedOrderForGallery ?: return
+        selectedOrderForGallery = null
+        val hasPendingCounts = orders.any { unlinkedCounts[it.id] == null }
+        if (hasPendingCounts || (unlinked == null && contentChanged)) {
+            refreshCounts()
+        } else if (unlinked != null) {
+            unlinkedCounts[order.id] = unlinked
+        }
+    }
 
     if (selectedOrderForGallery != null) {
         GalleryDetailScreen(
             order = selectedOrderForGallery!!,
             imagesFolderUri = imagesFolderUri,
-            onBack = {
-                selectedOrderForGallery = null
-                refreshCounts()
-            }
+            onBack = ::closeGalleryDetail
         )
     } else {
         Scaffold(
@@ -1028,24 +1061,13 @@ fun GalleryTab(
                 )
             }
 
-            val displayOrders = when {
-                showAllOrders -> orders
-                isInitialLoading -> orders
-                else -> {
-                    refreshTrigger
-                    orders.filter { (unlinkedCounts[it.id] ?: 0) > 0 }
-                }
-            }
+            val displayOrders = galleryOrdersToDisplay(orders, showAllOrders, unlinkedCounts)
 
             if (orders.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize().padding(paddingValues), contentAlignment = Alignment.Center) {
                     Text("Нет заказов. Загрузите Excel.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            } else if (isInitialLoading) {
-                Box(modifier = Modifier.fillMaxSize().padding(paddingValues), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else if (displayOrders.isEmpty() && !showAllOrders) {
+            } else if (displayOrders.isEmpty() && !showAllOrders && !isRefreshing) {
                 Box(modifier = Modifier.fillMaxSize().padding(paddingValues), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Все заказы имеют макеты 🎉", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1062,9 +1084,9 @@ fun GalleryTab(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(displayOrders, key = { it.id }) { order ->
-                        val unlinked = unlinkedCounts[order.id] ?: 0
+                        val unlinked = unlinkedCounts[order.id]
                         Card(
-                            modifier = Modifier.fillMaxWidth().safeClickable { selectedOrderForGallery = order },
+                            modifier = Modifier.fillMaxWidth().safeClickable { openGalleryDetail(order) },
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
@@ -1081,7 +1103,19 @@ fun GalleryTab(
                                     Text("Дата: ${order.date}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text("Моделей: ${order.models.size}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                if (unlinked > 0) {
+                                if (unlinked == null) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                        Text(
+                                            "Проверка…",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                } else if (unlinked > 0) {
                                     Box(
                                         modifier = Modifier
                                             .background(Color(0xFFFFF3E0), RoundedCornerShape(10.dp))
@@ -1115,6 +1149,18 @@ fun GalleryTab(
     }
 }
 
+internal fun galleryOrdersToDisplay(
+    orders: List<Order>,
+    showAllOrders: Boolean,
+    unlinkedCounts: Map<String, Int>
+): List<Order> {
+    if (showAllOrders) return orders
+    return orders.filter { order ->
+        val count = unlinkedCounts[order.id]
+        count == null || count > 0
+    }
+}
+
 data class FolderImage(
     val uri: Uri,
     val name: String,
@@ -1132,7 +1178,7 @@ data class GalleryImageItem(
 fun GalleryDetailScreen(
     order: Order,
     imagesFolderUri: String?,
-    onBack: () -> Unit
+    onBack: (unlinked: Int?, contentChanged: Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1147,6 +1193,13 @@ fun GalleryDetailScreen(
 
     var isLoading by remember { mutableStateOf(true) }
     var modelsWithoutImages by remember { mutableStateOf<List<ModelInfo>>(emptyList()) }
+    var contentChanged by remember { mutableStateOf(false) }
+
+    fun navigateBack() {
+        onBack(if (isLoading) null else modelsWithoutImages.size, contentChanged)
+    }
+
+    BackHandler { navigateBack() }
 
     val manualPhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val targetModel = modelToManualAttach
@@ -1177,7 +1230,10 @@ fun GalleryDetailScreen(
                         if (linked) "Фото привязано" else "Не удалось сохранить фото",
                         Toast.LENGTH_SHORT
                     ).show()
-                    if (linked) isLoading = true
+                    if (linked) {
+                        contentChanged = true
+                        isLoading = true
+                    }
                 }
             }
         }
@@ -1212,6 +1268,7 @@ fun GalleryDetailScreen(
                             Toast.LENGTH_SHORT
                         ).show()
                         orphanActionImage = null
+                        contentChanged = true
                         isLoading = true
                     }
                 } else {
@@ -1247,7 +1304,10 @@ fun GalleryDetailScreen(
                         if (addedCount == uris.size) "Добавлено фото: $addedCount" else "Добавлено $addedCount из ${uris.size} фото",
                         Toast.LENGTH_SHORT
                     ).show()
-                    if (addedCount > 0) isLoading = true
+                    if (addedCount > 0) {
+                        contentChanged = true
+                        isLoading = true
+                    }
                 }
             }
         }
@@ -1295,6 +1355,7 @@ fun GalleryDetailScreen(
                 scope.launch {
                     val deleted = withContext(Dispatchers.IO) { deleteDocument(context, target) }
                     if (deleted) {
+                        contentChanged = true
                         allImages = remainingImages
                         sortedImages = remainingItems
                         modelsWithoutImages = getModelsWithoutImages(
@@ -1403,7 +1464,7 @@ fun GalleryDetailScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { navigateBack() }) {
                         Text("←", fontSize = 28.sp, modifier = Modifier.padding(start = 8.dp), color = MaterialTheme.colorScheme.onBackground)
                     }
                 },
